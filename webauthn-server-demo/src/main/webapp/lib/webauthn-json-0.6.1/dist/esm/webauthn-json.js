@@ -87,12 +87,22 @@ var publicKeyCredentialDescriptorSchema = {
 var simplifiedExtensionsSchema = {
   appid: optional(copyValue),
   appidExclude: optional(copyValue),
-  credProps: optional(copyValue)
+  credProps: optional(copyValue),
+  mtcDebug: optional(copyValue)
 };
 var simplifiedClientExtensionResultsSchema = {
   appid: optional(copyValue),
   appidExclude: optional(copyValue),
-  credProps: optional(copyValue)
+  credProps: optional(copyValue),
+  mtcDebug: optional({
+    pubKey: optional(convertValue),
+    deviceSerial: optional(copyValue),
+    notBefore: optional(copyValue),
+    notAfter: optional(copyValue),
+    firmwareVersion: optional(copyValue),
+    mtcProof: optional(convertValue),
+    rootHash: optional(convertValue)
+  })
 };
 var credentialCreationOptions = {
   publicKey: required({
@@ -107,7 +117,9 @@ var credentialCreationOptions = {
     timeout: optional(copyValue),
     excludeCredentials: optional([publicKeyCredentialDescriptorSchema]),
     authenticatorSelection: optional(copyValue),
+    hints: optional(copyValue),
     attestation: optional(copyValue),
+    attestationFormats: optional(copyValue),
     extensions: optional(simplifiedExtensionsSchema)
   }),
   signal: optional(copyValue)

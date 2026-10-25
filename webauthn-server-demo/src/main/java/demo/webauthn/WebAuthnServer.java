@@ -49,11 +49,26 @@ import com.yubico.webauthn.RelyingPartyV2;
 import com.yubico.webauthn.StartAssertionOptions;
 import com.yubico.webauthn.StartRegistrationOptions;
 import com.yubico.webauthn.attestation.YubicoJsonMetadataService;
+import com.yubico.webauthn.attestation.mtc.CompositeMtcTrustSource;
+import com.yubico.webauthn.attestation.mtc.FidoMtcLogEntry;
+import com.yubico.webauthn.attestation.mtc.MtcAttestationInfo;
+import com.yubico.webauthn.attestation.mtc.MtcBatchKeyEntry;
+import com.yubico.webauthn.attestation.mtc.MtcJsonTrustSource;
+import com.yubico.webauthn.attestation.mtc.MtcSubtree;
+import com.yubico.webauthn.attestation.mtc.MtcTrustAnchor;
+import com.yubico.webauthn.attestation.mtc.MtcTrustSource;
 import com.yubico.webauthn.data.AttestationConveyancePreference;
+import com.yubico.webauthn.data.AttestationType;
+import com.yubico.webauthn.data.AuthenticatorAttestationResponse;
 import com.yubico.webauthn.data.AuthenticatorData;
 import com.yubico.webauthn.data.AuthenticatorSelectionCriteria;
 import com.yubico.webauthn.data.AuthenticatorTransport;
 import com.yubico.webauthn.data.ByteArray;
+import com.yubico.webauthn.data.COSEAlgorithmIdentifier;
+import com.yubico.webauthn.data.ClientRegistrationExtensionOutputs;
+import com.yubico.webauthn.data.PublicKeyCredential;
+import com.yubico.webauthn.data.PublicKeyCredentialParameters;
+import com.yubico.webauthn.data.RegistrationExtensionInputs;
 import com.yubico.webauthn.data.RelyingPartyIdentity;
 import com.yubico.webauthn.data.ResidentKeyRequirement;
 import com.yubico.webauthn.data.UserIdentity;
@@ -67,17 +82,31 @@ import demo.webauthn.data.RegistrationRequest;
 import demo.webauthn.data.RegistrationResponse;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.security.DigestException;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
+import java.security.KeyFactory;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.PrivateKey;
 import java.security.SecureRandom;
+import java.security.Security;
+import java.security.Signature;
 import java.security.SignatureException;
 import java.security.cert.CertPathValidatorException;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
+import java.security.interfaces.ECPublicKey;
+import java.security.spec.ECGenParameterSpec;
+import java.security.spec.PKCS8EncodedKeySpec;
 import java.time.Clock;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -91,12 +120,19 @@ import java.util.function.Supplier;
 import lombok.AllArgsConstructor;
 import lombok.NonNull;
 import lombok.Value;
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class WebAuthnServer {
   private static final Logger logger = LoggerFactory.getLogger(WebAuthnServer.class);
   private static final SecureRandom random = new SecureRandom();
+
+  static {
+    if (Security.getProvider("BC") == null) {
+      Security.addProvider(new BouncyCastleProvider());
+    }
+  }
 
   private final Cache<ByteArray, AssertionRequestWrapper> assertRequestStorage;
   private final Cache<ByteArray, RegistrationRequest> registerRequestStorage;
@@ -188,6 +224,8 @@ public class WebAuthnServer {
     this.registerRequestStorage = registerRequestStorage;
     this.assertRequestStorage = assertRequestStorage;
 
+    MtcTrustSource mtcTrustSource = buildDefaultMtcTrustSource();
+
     rp =
         RelyingParty.builder()
             .identity(rpIdentity)
@@ -195,12 +233,243 @@ public class WebAuthnServer {
             .usernameRepository(this.userStorage)
             .origins(origins)
             .attestationConveyancePreference(Optional.of(AttestationConveyancePreference.DIRECT))
+            .attestationFormats("mtc", "packed")
             .attestationTrustSource(metadataService)
+            .mtcTrustSource(mtcTrustSource)
             .allowOriginPort(false)
             .allowOriginSubdomain(false)
             .allowUntrustedAttestation(true)
             .validateSignatureCounter(true)
             .build();
+  }
+
+  // Demo MTC constants from Fidont OpenSK
+  private static final ByteArray FIDONT_AAGUID;
+  private static final ByteArray DEMO_BATCH_CA_ID; // g5k_AQM
+  private static final ByteArray ENTERPRISE_CA_ID; // g5k_AQI
+  private static final ByteArray ENTERPRISE_MANIFEST_CA_ID; // g5k_AQQ
+  private static final long DEMO_SERIAL = 1970324836974592L; // (7L << 48) | 0L
+  private static final long DEMO_NOT_BEFORE = 1792281600L;
+  private static final long DEMO_NOT_AFTER = 2107641600L;
+  private static final String DEMO_DEVICE_SERIAL = "123456";
+
+  private static final String FIDONT_ENTERPRISE_COSE_KEY_B64 =
+      "owEHAzgvIFkFINzYZIhJKP3OLxMPdmyU1f8bD5Drf3ZdXIGb0RnVNic4T947v8FBsceKALZ5WDYhaztebO08ntMVXBH7V2OlNMWbzXfzuy8poYZuqgZUV9EwJJIg4T2t0cAW3gXScvC2UaJn1In32wPSGh12nTDpu3lT3U7yN47XUTbUdqrA0hc33M3rZq-aDbacOj_X1m7mGcvdp_u6slrrCAby9gKz1sLFOmF2EHFpfbtPkwT8jTNkvxW8puQdoWPYpUkNkVV5RRkNpN9Q75whss4x8i0HXVuddJXj_B-ByKQ742kQCWVz2uNeNhIzpeV7vNXcRfhbHLnRt_9vMPRyZqfr44JsgQNZppT9mAnhG4lgl2QgoLfA29N8O55172LPdanlMggbqreSaL3nnUoqjNMmkOe09XnFRhKi-O7UncLNFNDPwsRvXLlKwEZLfAyZVkCWilMTbDO1cKrrw8DMFAJhoMQde2ujjOLNTmC9NfChq7mLC0bBqSYfiOztlunetIGyB3RBEHV_07ePlzC205eKzb5TS8UkI7x3ZqyT1QA5X7eOduRg6dailUj2qfZBHvTaKKcULJgsk8CjPAzBk3_k2C4mOIWg8rAfd62JPHdJoTazQc88N13ySdsYNRt5IFryu4NWLE8l85X4VfGf-qkeo44tDJF1dGrU7cJhIrd_-Ur_np2fdzDnHcMyNrI-gZOCofNR5zqZdhe7qcrOQmFhkPaj9A_spZmFst0yzeC3zW9H97sS8SrBBTLNDWKUMXgjcBBpiTes3Y5slsbGWag24jSNKH_vSBvPp6Ot-rbaJV5hPLNZWOwkuDXKejtHzx9HNksaGbK7e1Zl-Ig2iGvajAbHOQQSUfAcMNV360xbtIy-Bn6DG4x3xYdeWsurk1FbSuvz4vFdc8jT3EPIODx7bpKdl9ZTdzXGocuPwx5SR9YxpBcNzhvQUnSL0-2Xs9Mt0P50hmkhioNp2KyRYgjNl4KBzws3ezXWwN-96TVv4j4brhKsefh-p5-YrPGI2MtCE0a8VNIqvIBHXeo5Uho2XAuUjDQ1kp8801SmmNmLEXTYCLlKkAw5vVQN7ZS-9mIU_0TawtiWrDk3A6ENFJ9WT3xNNjjhZs_JClJ_rq3VH3hLq2K2R9Uc9zFL9hX-eYmzJFNIX7KCvxWRanF0-lSy9fY_kYJa95PlbYEuvWt1ILBvu9Q4DEU-6yKAac8hHhdI0AgBfsqMWb3RYVtFrGKrqsH-TB7D2MEwULE0U1M7ehp6T3DUAOrsW5oV4sLqDPiyc40IlxYJtQiFoX2BVc_WOM3Basi3pHO5JG9ITD7b1QXZ8KD0hVDf_71AVU_2PPE7vNeN-667SSMCcNusLsnHNWrMOdj6AF0m1q_WRDYHZUlRUqnWhU8mXarGi2GuaCtZspQ7bS1FXtzxtV5F7i-dpFaJX0_DNEfPU9cBu5vwnQAuIyoeXRULe9NswbGA8Ow8PJHjU7DvMhIooKzBnCpSnfVuMRWv3UwlqYNG7Jaw10sYyEwqfAYOaaXjmrh7sL0E_TRoHVQmKkBICHqY_-dc-ViQyuwiyiNsDq2-ovnm_5fQwxX-m81i4GIBhjsTp_12ZVhVyrusmtVmHhLVNDvFYXPuxZbg4jCH3qzFAzEEmRu2h-5rwV4SXuTA6p3m0xt_ydnjsZ-28VKbQ96iuMwMgE_ZcL49zDVA9EjEbtwYrMjlU7dD2dQfH7TwO55jao5FLOyCfzyN0yTvipUrnCUOQFI6rwI";
+
+  private static final String FIDONT_ENTERPRISE_MTC_PROOF_B64 =
+      "AAYxMjM0NTYAAAAAAAAAAAAAAAgAYAUR4uZ_FvWJr-TpcN46QNILQkiBjidf95-ZDnQ5uF9YmNjWkLSHrQBumpwQ2cUggDNBfF0Obf8_cAudHH8CJFgoFWvyGhl30KALcM5zQ4qsHpjuQ3uWfc0keVaY4Tl24AAAAA";
+
+  private static final String FIDONT_ENTERPRISE_ROOT_HASH_B64 =
+      "Jm8we_dJthE0X0JSq1xc_joQUs9WS-SQzBPpmkXJqHs";
+
+  private static final String FIDONT_ENTERPRISE_PKCS8_B64 =
+      "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";
+
+  private static final KeyPair DEMO_BATCH_KEYPAIR;
+  private static final ByteArray DEMO_BATCH_COSE_KEY;
+  private static final ByteArray DEMO_BATCH_ROOT_HASH;
+
+  static {
+    try {
+      FIDONT_AAGUID = ByteArray.fromHex("deadbeef000000000000deadbeef0000");
+      DEMO_BATCH_CA_ID = ByteArray.fromHex("83993f0103");
+      ENTERPRISE_CA_ID = ByteArray.fromHex("83993f0102");
+      ENTERPRISE_MANIFEST_CA_ID = ByteArray.fromHex("83993f0104");
+      KeyPairGenerator kpg = KeyPairGenerator.getInstance("EC");
+      kpg.initialize(new ECGenParameterSpec("secp256r1"));
+      DEMO_BATCH_KEYPAIR = kpg.generateKeyPair();
+      DEMO_BATCH_COSE_KEY = ecPublicKeyToCose((ECPublicKey) DEMO_BATCH_KEYPAIR.getPublic());
+      ByteArray pubKeyHash = FidoMtcLogEntry.computeCanonicalCoseKeyHash(DEMO_BATCH_COSE_KEY);
+      FidoMtcLogEntry leaf =
+          FidoMtcLogEntry.builder()
+              .caId(DEMO_BATCH_CA_ID)
+              .notBefore(DEMO_NOT_BEFORE)
+              .notAfter(DEMO_NOT_AFTER)
+              .aaguid(FIDONT_AAGUID)
+              .fwVersion(Optional.empty())
+              .pubKeyHash(pubKeyHash)
+              .serial(DEMO_SERIAL)
+              .extensions(new ByteArray(new byte[0]))
+              .build();
+      DEMO_BATCH_ROOT_HASH = leaf.computeLeafHash();
+    } catch (Exception e) {
+      throw new ExceptionInInitializerError(e);
+    }
+  }
+
+  private static ByteArray ecPublicKeyToCose(ECPublicKey pubKey) {
+    byte[] x = toUnsignedFixedLength(pubKey.getW().getAffineX().toByteArray(), 32);
+    byte[] y = toUnsignedFixedLength(pubKey.getW().getAffineY().toByteArray(), 32);
+    com.upokecenter.cbor.CBORObject cose = com.upokecenter.cbor.CBORObject.NewOrderedMap();
+    cose.Add(1, 2); // kty: EC2
+    cose.Add(3, -7); // alg: ES256
+    cose.Add(-1, 1); // crv: P-256
+    cose.Add(-2, x);
+    cose.Add(-3, y);
+    return new ByteArray(
+        cose.EncodeToBytes(com.upokecenter.cbor.CBOREncodeOptions.DefaultCtap2Canonical));
+  }
+
+  private static byte[] toUnsignedFixedLength(byte[] src, int length) {
+    if (src.length == length) {
+      return src;
+    }
+    byte[] out = new byte[length];
+    if (src.length > length) {
+      System.arraycopy(src, src.length - length, out, 0, length);
+    } else {
+      System.arraycopy(src, 0, out, length - src.length, src.length);
+    }
+    return out;
+  }
+
+  private static MtcTrustSource buildDefaultMtcTrustSource() {
+    try (InputStream is = WebAuthnServer.class.getResourceAsStream("/mtc-metadata.json")) {
+      MtcTrustSource mdsSource =
+          is != null ? MtcJsonTrustSource.fromMetadataStatementStream(is) : MtcTrustSource.empty();
+
+      // Demo batch anchor (caId = g5k_AQM) for browser simulation of MDS batch key lookup
+      MtcTrustAnchor demoBatchAnchor =
+          MtcTrustAnchor.builder()
+              .caId(DEMO_BATCH_CA_ID)
+              .logNumber(7)
+              .hashAlg("sha-256")
+              .maxBatchWindow(315360000L)
+              .subtrees(
+                  Collections.singletonList(
+                      MtcSubtree.builder()
+                          .logNumber(7)
+                          .start(0L)
+                          .end(1L)
+                          .rootHash(DEMO_BATCH_ROOT_HASH)
+                          .alg(-46)
+                          .signature(new ByteArray(new byte[32]))
+                          .build()))
+              .batchKeys(
+                  Collections.singletonList(
+                      MtcBatchKeyEntry.builder()
+                          .serial(DEMO_SERIAL)
+                          .alg(-7L)
+                          .coseKey(DEMO_BATCH_COSE_KEY)
+                          .build()))
+              .aaguid(FIDONT_AAGUID)
+              .keyTableAuthenticated(true)
+              .build();
+
+      // Demo enterprise manifest anchor (caId = g5k_AQQ) combining MDS subtree rootHash with vendor manifest key + deviceSerial
+      ByteArray enterpriseCoseKey = ByteArray.fromBase64Url(FIDONT_ENTERPRISE_COSE_KEY_B64);
+      ByteArray enterprisePubKeyHash =
+          FidoMtcLogEntry.computeCanonicalCoseKeyHash(enterpriseCoseKey);
+      FidoMtcLogEntry manifestLeaf =
+          FidoMtcLogEntry.builder()
+              .caId(ENTERPRISE_MANIFEST_CA_ID)
+              .serial(DEMO_SERIAL)
+              .notBefore(DEMO_NOT_BEFORE)
+              .notAfter(DEMO_NOT_AFTER)
+              .aaguid(FIDONT_AAGUID)
+              .fwVersion(Optional.empty())
+              .pubKeyHash(enterprisePubKeyHash)
+              .extensions(new ByteArray(DEMO_DEVICE_SERIAL.getBytes(StandardCharsets.UTF_8)))
+              .build();
+      ByteArray enterpriseManifestRootHash = manifestLeaf.computeLeafHash();
+      MtcTrustAnchor enterpriseManifestAnchor =
+          MtcTrustAnchor.builder()
+              .caId(ENTERPRISE_MANIFEST_CA_ID)
+              .logNumber(7)
+              .hashAlg("sha-256")
+              .maxBatchWindow(315360000L)
+              .subtrees(
+                  Collections.singletonList(
+                      MtcSubtree.builder()
+                          .logNumber(7)
+                          .start(0L)
+                          .end(1L)
+                          .rootHash(enterpriseManifestRootHash)
+                          .alg(-46)
+                          .signature(new ByteArray(new byte[32]))
+                          .build()))
+              .batchKeys(
+                  Collections.singletonList(
+                      MtcBatchKeyEntry.builder()
+                          .serial(DEMO_SERIAL)
+                          .alg(-48L)
+                          .coseKey(enterpriseCoseKey)
+                          .deviceSerial(DEMO_DEVICE_SERIAL)
+                          .build()))
+              .aaguid(FIDONT_AAGUID)
+              .keyTableAuthenticated(true)
+              .build();
+
+      MtcTrustSource demoExtras =
+          (caId, aaguid) -> {
+            if (caId.equals(DEMO_BATCH_CA_ID)) {
+              return Optional.of(demoBatchAnchor);
+            }
+            if (caId.equals(ENTERPRISE_MANIFEST_CA_ID)) {
+              return Optional.of(enterpriseManifestAnchor);
+            }
+            return Optional.empty();
+          };
+
+      return new CompositeMtcTrustSource(Arrays.asList(mdsSource, demoExtras));
+    } catch (Exception e) {
+      logger.warn("Failed to load /mtc-metadata.json for MTC trust source", e);
+      return MtcTrustSource.empty();
+    }
   }
 
   private static ByteArray generateRandom(int length) {
@@ -223,8 +492,58 @@ public class WebAuthnServer {
       ResidentKeyRequirement residentKeyRequirement,
       Optional<ByteArray> sessionToken)
       throws ExecutionException {
+    return startRegistration(
+        username,
+        displayName,
+        credentialNickname,
+        residentKeyRequirement,
+        sessionToken,
+        Optional.empty(),
+        Optional.empty(),
+        false);
+  }
+
+  public Either<String, RegistrationRequest> startRegistration(
+      @NonNull String username,
+      @NonNull String displayName,
+      Optional<String> credentialNickname,
+      ResidentKeyRequirement residentKeyRequirement,
+      Optional<ByteArray> sessionToken,
+      Optional<AttestationConveyancePreference> attestation,
+      Optional<List<String>> attestationFormats,
+      boolean mtcDebug)
+      throws ExecutionException {
+    return startRegistration(
+        username,
+        displayName,
+        credentialNickname,
+        residentKeyRequirement,
+        sessionToken,
+        attestation,
+        attestationFormats,
+        mtcDebug,
+        Optional.empty());
+  }
+
+  public Either<String, RegistrationRequest> startRegistration(
+      @NonNull String username,
+      @NonNull String displayName,
+      Optional<String> credentialNickname,
+      ResidentKeyRequirement residentKeyRequirement,
+      Optional<ByteArray> sessionToken,
+      Optional<AttestationConveyancePreference> attestation,
+      Optional<List<String>> attestationFormats,
+      boolean mtcDebug,
+      Optional<List<PublicKeyCredentialParameters>> pubKeyCredParams)
+      throws ExecutionException {
     logger.trace(
-        "startRegistration username: {}, credentialNickname: {}", username, credentialNickname);
+        "startRegistration username: {}, credentialNickname: {}, attestation: {}, attestationFormats: {}, mtcDebug: {}, pubKeyCredParams: {}",
+        username,
+        credentialNickname,
+        attestation,
+        attestationFormats,
+        mtcDebug,
+        pubKeyCredParams);
 
     final Collection<CredentialRegistration> registrations =
         userStorage.getRegistrationsByUsername(username);
@@ -245,19 +564,27 @@ public class WebAuthnServer {
                       .id(generateRandom(32))
                       .build());
 
+      StartRegistrationOptions.StartRegistrationOptionsBuilder optionsBuilder =
+          StartRegistrationOptions.builder()
+              .user(registrationUserId)
+              .authenticatorSelection(
+                  AuthenticatorSelectionCriteria.builder()
+                      .residentKey(residentKeyRequirement)
+                      .build())
+              .attestation(attestation)
+              .attestationFormats(attestationFormats)
+              .pubKeyCredParams(pubKeyCredParams);
+
+      if (mtcDebug) {
+        optionsBuilder.extensions(RegistrationExtensionInputs.builder().mtcDebug(true).build());
+      }
+
       RegistrationRequest request =
           new RegistrationRequest(
               username,
               credentialNickname,
               generateRandom(32),
-              rp.startRegistration(
-                  StartRegistrationOptions.builder()
-                      .user(registrationUserId)
-                      .authenticatorSelection(
-                          AuthenticatorSelectionCriteria.builder()
-                              .residentKey(residentKeyRequirement)
-                              .build())
-                      .build()),
+              rp.startRegistration(optionsBuilder.build()),
               Optional.of(sessions.createSession(registrationUserId.getId())));
       registerRequestStorage.put(request.getRequestId(), request);
       return Either.right(request);
@@ -273,6 +600,8 @@ public class WebAuthnServer {
     RegistrationResponse response;
     CredentialRegistration registration;
     boolean attestationTrusted;
+    AttestationType attestationType;
+    Optional<MtcAttestationInfo> mtcAttestation;
     Optional<AttestationCertInfo> attestationCert;
 
     @JsonSerialize(using = AuthDataSerializer.class)
@@ -286,11 +615,15 @@ public class WebAuthnServer {
         RegistrationResponse response,
         CredentialRegistration registration,
         boolean attestationTrusted,
+        AttestationType attestationType,
+        Optional<MtcAttestationInfo> mtcAttestation,
         ByteArray sessionToken) {
       this.request = request;
       this.response = response;
       this.registration = registration;
       this.attestationTrusted = attestationTrusted;
+      this.attestationType = attestationType;
+      this.mtcAttestation = mtcAttestation;
       attestationCert =
           Optional.ofNullable(
                   response
@@ -407,6 +740,8 @@ public class WebAuthnServer {
                     request.getCredentialNickname(),
                     registration),
                 registration.isAttestationTrusted(),
+                registration.getAttestationType(),
+                registration.getMtcAttestation(),
                 sessions.createSession(
                     request.getPublicKeyCredentialCreationOptions().getUser().getId())));
       } catch (RegistrationFailedException e) {
@@ -418,6 +753,206 @@ public class WebAuthnServer {
             Arrays.asList(
                 "Registration failed unexpectedly; this is likely a bug.", e.getMessage()));
       }
+    }
+  }
+
+  /**
+   * Generates a simulated {@code fmt: "mtc"} WebAuthn registration credential for the given mode
+   * ({@code "batch-mds"}, {@code "enterprise-manifest"}, or {@code "enterprise-mtc-debug"}) and
+   * active {@code requestId}.
+   */
+  public Either<List<String>, RegistrationResponse> createSimulatedMtcRegistrationResponse(
+      @NonNull ByteArray requestId, @NonNull String mode, @NonNull String origin) {
+    RegistrationRequest request = registerRequestStorage.getIfPresent(requestId);
+    if (request == null) {
+      return Either.left(
+          Arrays.asList("Simulation failed!", "No such registration request in progress."));
+    }
+
+    try {
+      boolean allowsEs256 =
+          request.getPublicKeyCredentialCreationOptions().getPubKeyCredParams().stream()
+              .anyMatch(p -> p.getAlg() == COSEAlgorithmIdentifier.ES256);
+      boolean allowsMlDsa44 =
+          request.getPublicKeyCredentialCreationOptions().getPubKeyCredParams().stream()
+              .anyMatch(p -> p.getAlg() == COSEAlgorithmIdentifier.ML_DSA_44);
+      final ByteArray credCoseKey;
+      if (!allowsEs256 && allowsMlDsa44) {
+        credCoseKey = ByteArray.fromBase64Url(FIDONT_ENTERPRISE_COSE_KEY_B64);
+      } else {
+        KeyPairGenerator credKpg = KeyPairGenerator.getInstance("EC");
+        credKpg.initialize(new ECGenParameterSpec("secp256r1"));
+        KeyPair credKeyPair = credKpg.generateKeyPair();
+        credCoseKey = ecPublicKeyToCose((ECPublicKey) credKeyPair.getPublic());
+      }
+      ByteArray credentialId = generateRandom(32);
+
+      // Build authenticatorData
+      byte[] rpIdHash =
+          MessageDigest.getInstance("SHA-256")
+              .digest(
+                  request
+                      .getPublicKeyCredentialCreationOptions()
+                      .getRp()
+                      .getId()
+                      .getBytes(StandardCharsets.UTF_8));
+      boolean includeMtcDebug =
+          "enterprise-mtc-debug".equalsIgnoreCase(mode)
+              || "enterprise-keyref-mtc-debug".equalsIgnoreCase(mode);
+      boolean useKeyRef = "enterprise-keyref-mtc-debug".equalsIgnoreCase(mode);
+      byte flags = (byte) (0x01 | 0x04 | 0x40 | (includeMtcDebug ? 0x80 : 0x00)); // UP | UV | AT | ED?
+
+      byte[] extBytes = new byte[0];
+      com.yubico.webauthn.data.Extensions.MtcDebug.MtcDebugRegistrationOutput clientMtcDebug = null;
+      if (includeMtcDebug) {
+        ByteArray enterpriseCoseKey = ByteArray.fromBase64Url(FIDONT_ENTERPRISE_COSE_KEY_B64);
+        ByteArray enterpriseProof = ByteArray.fromBase64Url(FIDONT_ENTERPRISE_MTC_PROOF_B64);
+        ByteArray enterpriseRootHash = ByteArray.fromBase64Url(FIDONT_ENTERPRISE_ROOT_HASH_B64);
+        com.upokecenter.cbor.CBORObject mtcDebugMap = com.upokecenter.cbor.CBORObject.NewOrderedMap();
+        mtcDebugMap.Add("pubKey", enterpriseCoseKey.getBytes());
+        mtcDebugMap.Add("deviceSerial", DEMO_DEVICE_SERIAL);
+        mtcDebugMap.Add("notBefore", DEMO_NOT_BEFORE);
+        mtcDebugMap.Add("notAfter", DEMO_NOT_AFTER);
+        mtcDebugMap.Add("mtcProof", enterpriseProof.getBytes());
+        mtcDebugMap.Add("rootHash", enterpriseRootHash.getBytes());
+        com.upokecenter.cbor.CBORObject exts = com.upokecenter.cbor.CBORObject.NewOrderedMap();
+        exts.Add("mtc-debug", mtcDebugMap);
+        extBytes =
+            exts.EncodeToBytes(com.upokecenter.cbor.CBOREncodeOptions.DefaultCtap2Canonical);
+        clientMtcDebug =
+            com.yubico.webauthn.data.Extensions.MtcDebug.MtcDebugRegistrationOutput.builder()
+                .pubKey(enterpriseCoseKey)
+                .deviceSerial(DEMO_DEVICE_SERIAL)
+                .notBefore(DEMO_NOT_BEFORE)
+                .notAfter(DEMO_NOT_AFTER)
+                .mtcProof(enterpriseProof)
+                .rootHash(enterpriseRootHash)
+                .build();
+      }
+
+      byte[] aaguidBytes = FIDONT_AAGUID.getBytes();
+      byte[] credIdBytes = credentialId.getBytes();
+      byte[] credKeyBytes = credCoseKey.getBytes();
+      ByteBuffer authDataBuf =
+          ByteBuffer.allocate(
+              32 + 1 + 4 + 16 + 2 + credIdBytes.length + credKeyBytes.length + extBytes.length);
+      authDataBuf.put(rpIdHash);
+      authDataBuf.put(flags);
+      authDataBuf.putInt(1); // signCount = 1
+      authDataBuf.put(aaguidBytes);
+      authDataBuf.putShort((short) credIdBytes.length);
+      authDataBuf.put(credIdBytes);
+      authDataBuf.put(credKeyBytes);
+      authDataBuf.put(extBytes);
+      byte[] authDataBytes = authDataBuf.array();
+
+      String clientDataJsonStr =
+          String.format(
+              "{\"type\":\"webauthn.create\",\"challenge\":\"%s\",\"origin\":\"%s\",\"crossOrigin\":false}",
+              request.getPublicKeyCredentialCreationOptions().getChallenge().getBase64Url(),
+              origin);
+      byte[] clientDataBytes = clientDataJsonStr.getBytes(StandardCharsets.UTF_8);
+      byte[] clientDataHash = MessageDigest.getInstance("SHA-256").digest(clientDataBytes);
+
+      byte[] signedData = new byte[authDataBytes.length + clientDataHash.length];
+      System.arraycopy(authDataBytes, 0, signedData, 0, authDataBytes.length);
+      System.arraycopy(clientDataHash, 0, signedData, authDataBytes.length, clientDataHash.length);
+
+      final int alg;
+      final byte[] sigBytes;
+      final byte[] caIdBytes;
+      final byte[] mtcProofBytes;
+
+      if ("batch-mds".equalsIgnoreCase(mode)) {
+        alg = -7; // ES256
+        Signature ecdsa = Signature.getInstance("SHA256withECDSA");
+        ecdsa.initSign(DEMO_BATCH_KEYPAIR.getPrivate());
+        ecdsa.update(signedData);
+        sigBytes = ecdsa.sign();
+        caIdBytes = DEMO_BATCH_CA_ID.getBytes();
+        // Single-leaf MTCProof: ext_len(0) || start(0) || end(1) || proof_len(0) || sig_len(0)
+        ByteBuffer proofBuf = ByteBuffer.allocate(2 + 6 + 6 + 2 + 3);
+        proofBuf.putShort((short) 0);
+        proofBuf.put(new byte[6]);
+        proofBuf.put(new byte[] {0, 0, 0, 0, 0, 1});
+        proofBuf.putShort((short) 0);
+        proofBuf.put(new byte[] {0, 0, 0});
+        mtcProofBytes = proofBuf.array();
+      } else {
+        alg = -48; // ML-DSA-44
+        byte[] pkcs8 = Base64.getDecoder().decode(FIDONT_ENTERPRISE_PKCS8_B64);
+        PrivateKey mlDsaKey =
+            KeyFactory.getInstance("ML-DSA-44", "BC")
+                .generatePrivate(new PKCS8EncodedKeySpec(pkcs8));
+        Signature mlDsa = Signature.getInstance("ML-DSA-44", "BC");
+        mlDsa.initSign(mlDsaKey);
+        mlDsa.update(signedData);
+        sigBytes = mlDsa.sign();
+        if ("enterprise-manifest".equalsIgnoreCase(mode)) {
+          caIdBytes = ENTERPRISE_MANIFEST_CA_ID.getBytes();
+          byte[] serialUtf8 = DEMO_DEVICE_SERIAL.getBytes(StandardCharsets.UTF_8);
+          ByteBuffer proofBuf = ByteBuffer.allocate(2 + serialUtf8.length + 6 + 6 + 2 + 3);
+          proofBuf.putShort((short) serialUtf8.length);
+          proofBuf.put(serialUtf8);
+          proofBuf.put(new byte[6]);
+          proofBuf.put(new byte[] {0, 0, 0, 0, 0, 1});
+          proofBuf.putShort((short) 0);
+          proofBuf.put(new byte[] {0, 0, 0});
+          mtcProofBytes = proofBuf.array();
+        } else {
+          caIdBytes = ENTERPRISE_CA_ID.getBytes();
+          mtcProofBytes = ByteArray.fromBase64Url(FIDONT_ENTERPRISE_MTC_PROOF_B64).getBytes();
+        }
+      }
+
+      // Build consolidated fmt="mtc" attestationObject (NO inline pubKey in attStmt)
+      com.upokecenter.cbor.CBORObject mtcCert = com.upokecenter.cbor.CBORObject.NewOrderedMap();
+      mtcCert.Add("caId", caIdBytes);
+      mtcCert.Add("serial", DEMO_SERIAL);
+      if (!useKeyRef) {
+        mtcCert.Add("notBefore", DEMO_NOT_BEFORE);
+        mtcCert.Add("notAfter", DEMO_NOT_AFTER);
+        mtcCert.Add("mtcProof", mtcProofBytes);
+      }
+
+      com.upokecenter.cbor.CBORObject attStmt = com.upokecenter.cbor.CBORObject.NewOrderedMap();
+      attStmt.Add("alg", alg);
+      attStmt.Add("sig", sigBytes);
+      attStmt.Add("mtcCert", mtcCert);
+
+      com.upokecenter.cbor.CBORObject attObj = com.upokecenter.cbor.CBORObject.NewOrderedMap();
+      attObj.Add("fmt", "mtc");
+      attObj.Add("authData", authDataBytes);
+      attObj.Add("attStmt", attStmt);
+
+      ByteArray attestationObjectBytes = new ByteArray(attObj.EncodeToBytes());
+
+      AuthenticatorAttestationResponse attResp =
+          AuthenticatorAttestationResponse.builder()
+              .attestationObject(attestationObjectBytes)
+              .clientDataJSON(new ByteArray(clientDataBytes))
+              .build();
+
+      ClientRegistrationExtensionOutputs.ClientRegistrationExtensionOutputsBuilder clientExtsBuilder =
+          ClientRegistrationExtensionOutputs.builder();
+      if (clientMtcDebug != null) {
+        clientExtsBuilder.mtcDebug(clientMtcDebug);
+      }
+
+      PublicKeyCredential<AuthenticatorAttestationResponse, ClientRegistrationExtensionOutputs>
+          credential =
+              PublicKeyCredential
+                  .<AuthenticatorAttestationResponse, ClientRegistrationExtensionOutputs>builder()
+                  .id(credentialId)
+                  .response(attResp)
+                  .clientExtensionResults(clientExtsBuilder.build())
+                  .build();
+
+      return Either.right(
+          new RegistrationResponse(request.getRequestId(), credential, request.getSessionToken()));
+    } catch (Exception e) {
+      logger.error("Failed to simulate MTC registration", e);
+      return Either.left(Arrays.asList("MTC simulation failed!", e.getMessage()));
     }
   }
 

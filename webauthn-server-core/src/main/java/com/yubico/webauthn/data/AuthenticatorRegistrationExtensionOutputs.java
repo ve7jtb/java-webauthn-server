@@ -63,14 +63,17 @@ public final class AuthenticatorRegistrationExtensionOutputs
 
   private final Extensions.CredentialProtection.CredentialProtectionPolicy credProtect;
   private final List<Extensions.Uvm.UvmEntry> uvm;
+  private final Extensions.MtcDebug.MtcDebugRegistrationOutput mtcDebug;
 
   @JsonCreator
   private AuthenticatorRegistrationExtensionOutputs(
       @JsonProperty("credProtect")
           Extensions.CredentialProtection.CredentialProtectionPolicy credProtect,
-      @JsonProperty("uvm") List<Extensions.Uvm.UvmEntry> uvm) {
+      @JsonProperty("uvm") List<Extensions.Uvm.UvmEntry> uvm,
+      @JsonProperty("mtcDebug") Extensions.MtcDebug.MtcDebugRegistrationOutput mtcDebug) {
     this.credProtect = credProtect;
     this.uvm = uvm == null ? null : CollectionUtil.immutableList(uvm);
+    this.mtcDebug = mtcDebug;
   }
 
   /**
@@ -114,6 +117,7 @@ public final class AuthenticatorRegistrationExtensionOutputs
     Extensions.CredentialProtection.parseAuthenticatorExtensionOutput(cbor)
         .ifPresent(b::credProtect);
     Extensions.Uvm.parseAuthenticatorExtensionOutput(cbor).ifPresent(b::uvm);
+    Extensions.MtcDebug.parseAuthenticatorExtensionOutput(cbor).ifPresent(b::mtcDebug);
 
     AuthenticatorRegistrationExtensionOutputs result = b.build();
 
@@ -133,6 +137,9 @@ public final class AuthenticatorRegistrationExtensionOutputs
     }
     if (uvm != null) {
       ids.add(Extensions.Uvm.EXTENSION_ID);
+    }
+    if (mtcDebug != null) {
+      ids.add(Extensions.MtcDebug.EXTENSION_ID);
     }
     return ids;
   }
@@ -164,5 +171,13 @@ public final class AuthenticatorRegistrationExtensionOutputs
    */
   public Optional<List<Extensions.Uvm.UvmEntry>> getUvm() {
     return Optional.ofNullable(uvm);
+  }
+
+  /**
+   * @return The authenticator extension output for the MTC Attestation Debugging (<code>mtc-debug
+   *     </code>) extension, if any.
+   */
+  public Optional<Extensions.MtcDebug.MtcDebugRegistrationOutput> getMtcDebug() {
+    return Optional.ofNullable(mtcDebug);
   }
 }

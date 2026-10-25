@@ -1329,4 +1329,194 @@ public class Extensions {
       return true;
     }
   }
+
+  /**
+   * Definitions for the MTC Attestation Debugging Extension (<code>mtcDebug</code> / <code>
+   * mtc-debug</code>).
+   */
+  public static class MtcDebug {
+    public static final String EXTENSION_ID = "mtcDebug";
+    public static final String AUTHENTICATOR_EXTENSION_ID = "mtc-debug";
+
+    /**
+     * Registration output for the MTC Attestation Debugging Extension (<code>mtcDebug</code> /
+     * <code>mtc-debug</code>).
+     */
+    @Value
+    @Builder(toBuilder = true)
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class MtcDebugRegistrationOutput {
+      @NonNull
+      @JsonProperty("pubKey")
+      private final ByteArray pubKey;
+
+      @JsonProperty("deviceSerial")
+      private final String deviceSerial;
+
+      @JsonProperty("notBefore")
+      private final Long notBefore;
+
+      @JsonProperty("notAfter")
+      private final Long notAfter;
+
+      @JsonProperty("firmwareVersion")
+      private final Long firmwareVersion;
+
+      @JsonProperty("mtcProof")
+      private final ByteArray mtcProof;
+
+      @JsonProperty("rootHash")
+      private final ByteArray rootHash;
+
+      public MtcDebugRegistrationOutput(@NonNull ByteArray pubKey, String deviceSerial) {
+        this(pubKey, deviceSerial, null, null, null, null, null);
+      }
+
+      @JsonCreator
+      public MtcDebugRegistrationOutput(
+          @NonNull @JsonProperty("pubKey") ByteArray pubKey,
+          @JsonProperty("deviceSerial") String deviceSerial,
+          @JsonProperty("notBefore") Long notBefore,
+          @JsonProperty("notAfter") Long notAfter,
+          @JsonProperty("firmwareVersion") Long firmwareVersion,
+          @JsonProperty("mtcProof") ByteArray mtcProof,
+          @JsonProperty("rootHash") ByteArray rootHash) {
+        this.pubKey = pubKey;
+        this.deviceSerial = deviceSerial;
+        this.notBefore = notBefore;
+        this.notAfter = notAfter;
+        this.firmwareVersion = firmwareVersion;
+        this.mtcProof = mtcProof;
+        this.rootHash = rootHash;
+      }
+
+      public Optional<String> getDeviceSerial() {
+        return Optional.ofNullable(deviceSerial);
+      }
+
+      public Optional<Long> getNotBefore() {
+        return Optional.ofNullable(notBefore);
+      }
+
+      public Optional<Long> getNotAfter() {
+        return Optional.ofNullable(notAfter);
+      }
+
+      public Optional<Long> getFirmwareVersion() {
+        return Optional.ofNullable(firmwareVersion);
+      }
+
+      public Optional<ByteArray> getMtcProof() {
+        return Optional.ofNullable(mtcProof);
+      }
+
+      public Optional<ByteArray> getRootHash() {
+        return Optional.ofNullable(rootHash);
+      }
+    }
+
+    static Optional<MtcDebugRegistrationOutput> parseAuthenticatorExtensionOutput(CBORObject cbor) {
+      CBORObject ext = null;
+      if (cbor.ContainsKey(AUTHENTICATOR_EXTENSION_ID)) {
+        ext = cbor.get(AUTHENTICATOR_EXTENSION_ID);
+      } else if (cbor.ContainsKey(EXTENSION_ID)) {
+        ext = cbor.get(EXTENSION_ID);
+      }
+      if (ext == null) {
+        return Optional.empty();
+      }
+      if (ext.getType() != CBORType.Map) {
+        log.debug(
+            "Invalid CBOR type for \"{}\" extension output: expected map, was: {}",
+            AUTHENTICATOR_EXTENSION_ID,
+            ext.getType());
+        return Optional.empty();
+      }
+      CBORObject pubKeyObj = ext.get("pubKey");
+      if (pubKeyObj == null || pubKeyObj.getType() != CBORType.ByteString) {
+        log.debug(
+            "Invalid or missing \"pubKey\" in \"{}\" extension output",
+            AUTHENTICATOR_EXTENSION_ID);
+        return Optional.empty();
+      }
+      ByteArray pubKey = new ByteArray(pubKeyObj.GetByteString());
+      String deviceSerial = null;
+      CBORObject serialObj = ext.get("deviceSerial");
+      if (serialObj != null && !serialObj.isNull()) {
+        if (serialObj.getType() == CBORType.TextString) {
+          deviceSerial = serialObj.AsString();
+        } else if (serialObj.isNumber() && serialObj.AsNumber().IsInteger()) {
+          deviceSerial = serialObj.AsNumber().toString();
+        } else {
+          log.debug(
+              "Invalid CBOR type for \"deviceSerial\" in \"{}\" extension output: {}",
+              AUTHENTICATOR_EXTENSION_ID,
+              serialObj.getType());
+          return Optional.empty();
+        }
+      }
+
+      Long notBefore = null;
+      CBORObject notBeforeObj = ext.get("notBefore");
+      if (notBeforeObj != null && !notBeforeObj.isNull()) {
+        if (!notBeforeObj.isNumber() || !notBeforeObj.AsNumber().IsInteger() || notBeforeObj.AsNumber().IsNegative()) {
+          log.debug("Invalid CBOR type for \"notBefore\" in \"{}\" extension output", AUTHENTICATOR_EXTENSION_ID);
+          return Optional.empty();
+        }
+        notBefore = notBeforeObj.AsInt64Value();
+      }
+
+      Long notAfter = null;
+      CBORObject notAfterObj = ext.get("notAfter");
+      if (notAfterObj != null && !notAfterObj.isNull()) {
+        if (!notAfterObj.isNumber() || !notAfterObj.AsNumber().IsInteger() || notAfterObj.AsNumber().IsNegative()) {
+          log.debug("Invalid CBOR type for \"notAfter\" in \"{}\" extension output", AUTHENTICATOR_EXTENSION_ID);
+          return Optional.empty();
+        }
+        notAfter = notAfterObj.AsInt64Value();
+      }
+
+      Long firmwareVersion = null;
+      CBORObject fwObj = ext.get("firmwareVersion");
+      if (fwObj == null || fwObj.isNull()) {
+        fwObj = ext.get("fwVersion");
+      }
+      if (fwObj != null && !fwObj.isNull()) {
+        if (!fwObj.isNumber() || !fwObj.AsNumber().IsInteger() || fwObj.AsNumber().IsNegative()) {
+          log.debug("Invalid CBOR type for \"firmwareVersion\" in \"{}\" extension output", AUTHENTICATOR_EXTENSION_ID);
+          return Optional.empty();
+        }
+        long fwVal = fwObj.AsInt64Value();
+        if (fwVal < 0 || fwVal > 0xFFFFFFFFL) {
+          log.debug("\"firmwareVersion\" out of uint32 range in \"{}\" extension output: {}", AUTHENTICATOR_EXTENSION_ID, fwVal);
+          return Optional.empty();
+        }
+        firmwareVersion = fwVal;
+      }
+
+      ByteArray mtcProof = null;
+      CBORObject proofObj = ext.get("mtcProof");
+      if (proofObj != null && !proofObj.isNull()) {
+        if (proofObj.getType() != CBORType.ByteString) {
+          log.debug("Invalid CBOR type for \"mtcProof\" in \"{}\" extension output", AUTHENTICATOR_EXTENSION_ID);
+          return Optional.empty();
+        }
+        mtcProof = new ByteArray(proofObj.GetByteString());
+      }
+
+      ByteArray rootHash = null;
+      CBORObject rootHashObj = ext.get("rootHash");
+      if (rootHashObj != null && !rootHashObj.isNull()) {
+        if (rootHashObj.getType() != CBORType.ByteString) {
+          log.debug("Invalid CBOR type for \"rootHash\" in \"{}\" extension output", AUTHENTICATOR_EXTENSION_ID);
+          return Optional.empty();
+        }
+        rootHash = new ByteArray(rootHashObj.GetByteString());
+      }
+
+      return Optional.of(
+          new MtcDebugRegistrationOutput(
+              pubKey, deviceSerial, notBefore, notAfter, firmwareVersion, mtcProof, rootHash));
+    }
+  }
 }

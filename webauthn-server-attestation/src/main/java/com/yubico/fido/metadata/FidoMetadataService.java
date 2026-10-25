@@ -26,11 +26,16 @@ package com.yubico.fido.metadata;
 
 import com.yubico.fido.metadata.FidoMetadataService.Filters.AuthenticatorToBeFiltered;
 import com.yubico.internal.util.CertificateParser;
+import com.yubico.internal.util.CollectionUtil;
 import com.yubico.internal.util.OptionalUtil;
 import com.yubico.webauthn.RegistrationResult;
 import com.yubico.webauthn.RelyingParty;
 import com.yubico.webauthn.RelyingParty.RelyingPartyBuilder;
 import com.yubico.webauthn.attestation.AttestationTrustSource;
+import com.yubico.webauthn.attestation.mtc.MtcCheckpoint;
+import com.yubico.webauthn.attestation.mtc.MtcSubtree;
+import com.yubico.webauthn.attestation.mtc.MtcTrustAnchor;
+import com.yubico.webauthn.attestation.mtc.MtcTrustSource;
 import com.yubico.webauthn.data.ByteArray;
 import com.yubico.webauthn.data.exception.Base64UrlException;
 import java.io.IOException;
@@ -91,7 +96,7 @@ import lombok.extern.slf4j.Slf4j;
  * @since 2.0.0
  */
 @Slf4j
-public final class FidoMetadataService implements AttestationTrustSource {
+public final class FidoMetadataService implements AttestationTrustSource, MtcTrustSource {
 
   private final HashMap<String, HashSet<MetadataBLOBPayloadEntry>>
       prefilteredEntriesByCertificateKeyIdentifier;
@@ -637,10 +642,15 @@ public final class FidoMetadataService implements AttestationTrustSource {
    * @see #findEntries(List, Optional)
    */
   public Set<MetadataBLOBPayloadEntry> findEntries(@NonNull RegistrationResult registrationResult) {
-    return registrationResult
-        .getAttestationTrustPath()
-        .map(atp -> findEntries(atp, new AAGUID(registrationResult.getAaguid())))
-        .orElseGet(Collections::emptySet);
+    if (registrationResult.getAttestationTrustPath().isPresent()) {
+      return findEntries(
+          registrationResult.getAttestationTrustPath().get(),
+          new AAGUID(registrationResult.getAaguid()));
+    }
+    if (registrationResult.getMtcAttestation().isPresent()) {
+      return findEntries(new AAGUID(registrationResult.getAaguid()));
+    }
+    return Collections.emptySet();
   }
 
   /**
@@ -698,5 +708,52 @@ public final class FidoMetadataService implements AttestationTrustSource {
         .enableRevocationChecking(false)
         .policyTreeValidator(policyNode -> true)
         .build();
+  }
+
+  @Override
+  public Optional<MtcTrustAnchor> findMtcTrustAnchor(
+      ByteArray caId, Optional<ByteArray> aaguid) {
+    Set<MetadataBLOBPayloadEntry> candidates =
+        aaguid
+            .map(AAGUID::new)
+            .filter(a -> !a.isZero())
+            .map(this::findEntries)
+            .orElseGet(() -> findEntries(entry -> true));
+
+    for (MetadataBLOBPayloadEntry entry : candidates) {
+      Optional<MetadataStatement> stmtOpt = entry.getMetadataStatement();
+      if (!stmtOpt.isPresent()) {
+        continue;
+      }
+      MetadataStatement stmt = stmtOpt.get();
+      Optional<List<MtcTrustAnchor>> anchorsOpt = stmt.getMtcTrustAnchors();
+      if (!anchorsOpt.isPresent()) {
+        continue;
+      }
+      for (MtcTrustAnchor rawAnchor : anchorsOpt.get()) {
+        if (!rawAnchor.getCaId().equals(caId)) {
+          continue;
+        }
+        int defaultLogNumber = rawAnchor.getLogNumber().orElse(0);
+        List<MtcSubtree> validSubtrees =
+            rawAnchor.getSubtrees().stream()
+                .filter(
+                    st ->
+                        MtcCheckpoint.verifySubtreeCheckpoint(
+                            rawAnchor.getCaId(),
+                            defaultLogNumber,
+                            st,
+                            stmt.getAttestationRootCertificates()))
+                .collect(Collectors.toList());
+
+        MtcTrustAnchor.MtcTrustAnchorBuilder b =
+            rawAnchor.toBuilder()
+                .subtrees(CollectionUtil.immutableList(validSubtrees))
+                .keyTableAuthenticated(true);
+        stmt.getAaguid().map(AAGUID::asBytes).ifPresent(b::aaguid);
+        return Optional.of(b.build());
+      }
+    }
+    return Optional.empty();
   }
 }

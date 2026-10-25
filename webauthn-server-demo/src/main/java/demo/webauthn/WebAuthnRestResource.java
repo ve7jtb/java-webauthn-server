@@ -33,7 +33,10 @@ import com.yubico.fido.metadata.FidoMetadataDownloaderException;
 import com.yubico.fido.metadata.UnexpectedLegalHeader;
 import com.yubico.internal.util.JacksonCodecs;
 import com.yubico.util.Either;
+import com.yubico.webauthn.data.AttestationConveyancePreference;
 import com.yubico.webauthn.data.ByteArray;
+import com.yubico.webauthn.data.COSEAlgorithmIdentifier;
+import com.yubico.webauthn.data.PublicKeyCredentialParameters;
 import com.yubico.webauthn.data.ResidentKeyRequirement;
 import com.yubico.webauthn.data.exception.Base64UrlException;
 import com.yubico.webauthn.extension.appid.InvalidAppIdException;
@@ -41,6 +44,7 @@ import com.yubico.webauthn.meta.VersionInfo;
 import demo.webauthn.WebAuthnServer.DeregisterCredentialResult;
 import demo.webauthn.data.AssertionRequestWrapper;
 import demo.webauthn.data.RegistrationRequest;
+import demo.webauthn.data.RegistrationResponse;
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -174,14 +178,72 @@ public class WebAuthnRestResource {
       @NonNull @FormParam("displayName") String displayName,
       @FormParam("credentialNickname") String credentialNickname,
       @FormParam("requireResidentKey") @DefaultValue("false") boolean requireResidentKey,
-      @FormParam("sessionToken") String sessionTokenBase64)
+      @FormParam("sessionToken") String sessionTokenBase64,
+      @FormParam("attestation") String attestationParam,
+      @FormParam("attestationFormats") String attestationFormatsParam,
+      @FormParam("mtcDebug") @DefaultValue("false") boolean mtcDebug,
+      @FormParam("pubKeyCredParams") String pubKeyCredParamsParam)
       throws MalformedURLException, ExecutionException {
     logger.trace(
-        "startRegistration username: {}, displayName: {}, credentialNickname: {}, requireResidentKey: {}",
+        "startRegistration username: {}, displayName: {}, credentialNickname: {}, requireResidentKey: {}, attestation: {}, attestationFormats: {}, mtcDebug: {}, pubKeyCredParams: {}",
         username,
         displayName,
         credentialNickname,
-        requireResidentKey);
+        requireResidentKey,
+        attestationParam,
+        attestationFormatsParam,
+        mtcDebug,
+        pubKeyCredParamsParam);
+
+    Optional<AttestationConveyancePreference> attestation =
+        Optional.ofNullable(attestationParam)
+            .map(String::trim)
+            .filter(s -> !s.isEmpty())
+            .flatMap(
+                s ->
+                    Arrays.stream(AttestationConveyancePreference.values())
+                        .filter(
+                            v ->
+                                v.name().equalsIgnoreCase(s)
+                                    || v.toString().equalsIgnoreCase(s))
+                        .findFirst());
+
+    Optional<List<String>> attestationFormats =
+        Optional.ofNullable(attestationFormatsParam)
+            .map(String::trim)
+            .filter(s -> !s.isEmpty())
+            .map(
+                s ->
+                    Arrays.stream(s.split(","))
+                        .map(String::trim)
+                        .filter(f -> !f.isEmpty())
+                        .collect(Collectors.toList()));
+
+    Optional<List<PublicKeyCredentialParameters>> pubKeyCredParams =
+        Optional.ofNullable(pubKeyCredParamsParam)
+            .map(String::trim)
+            .filter(s -> !s.isEmpty())
+            .map(
+                s ->
+                    Arrays.stream(s.split(","))
+                        .map(String::trim)
+                        .filter(f -> !f.isEmpty())
+                        .map(
+                            token -> {
+                              try {
+                                long id = Long.parseLong(token);
+                                return COSEAlgorithmIdentifier.fromId(id);
+                              } catch (NumberFormatException e) {
+                                return Arrays.stream(COSEAlgorithmIdentifier.values())
+                                    .filter(v -> v.name().equalsIgnoreCase(token))
+                                    .findFirst();
+                              }
+                            })
+                        .filter(Optional::isPresent)
+                        .map(opt -> PublicKeyCredentialParameters.builder().alg(opt.get()).build())
+                        .collect(Collectors.toList()))
+            .filter(list -> !list.isEmpty());
+
     Either<String, RegistrationRequest> result =
         server.startRegistration(
             username,
@@ -191,6 +253,7 @@ public class WebAuthnRestResource {
                 ? ResidentKeyRequirement.REQUIRED
                 : ResidentKeyRequirement.DISCOURAGED,
             Optional.ofNullable(sessionTokenBase64)
+                .filter(s -> !s.isEmpty() && !"null".equals(s))
                 .map(
                     base64 -> {
                       try {
@@ -198,13 +261,56 @@ public class WebAuthnRestResource {
                       } catch (Base64UrlException e) {
                         throw new RuntimeException(e);
                       }
-                    }));
+                    }),
+            attestation,
+            attestationFormats,
+            mtcDebug,
+            pubKeyCredParams);
 
     if (result.isRight()) {
       return startResponse(
           "startRegistration", new StartRegistrationResponse(result.right().get()));
     } else {
       return messagesJson(Response.status(Status.BAD_REQUEST), result.left().get());
+    }
+  }
+
+  @Consumes("application/x-www-form-urlencoded")
+  @Path("register/simulate-mtc")
+  @POST
+  public Response simulateMtcRegistration(
+      @NonNull @FormParam("requestId") String requestIdBase64,
+      @NonNull @FormParam("mode") @DefaultValue("batch-mds") String mode,
+      @FormParam("origin") String originParam) {
+    final ByteArray requestId;
+    try {
+      requestId = ByteArray.fromBase64Url(requestIdBase64);
+    } catch (Base64UrlException e) {
+      return messagesJson(
+          Response.status(Status.BAD_REQUEST), "Invalid Base64Url requestId: " + requestIdBase64);
+    }
+    String origin =
+        Optional.ofNullable(originParam)
+            .filter(s -> !s.isEmpty())
+            .orElseGet(
+                () ->
+                    Config.getOrigins().stream().findFirst().orElse("http://localhost:8080"));
+    Either<List<String>, RegistrationResponse> simResult =
+        server.createSimulatedMtcRegistrationResponse(requestId, mode, origin);
+    if (simResult.isLeft()) {
+      return messagesJson(Response.status(Status.BAD_REQUEST), simResult.left().get());
+    }
+    try {
+      String responseJson = jsonMapper.writeValueAsString(simResult.right().get());
+      Either<List<String>, WebAuthnServer.SuccessfulRegistrationResult> finishResult =
+          server.finishRegistration(responseJson);
+      return finishResponse(
+          finishResult,
+          "MTC simulated registration verification failed.",
+          "simulateMtcRegistration",
+          responseJson);
+    } catch (JsonProcessingException e) {
+      return jsonFail();
     }
   }
 

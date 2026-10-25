@@ -3,6 +3,7 @@ package com.yubico.fido.metadata;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.yubico.internal.util.CollectionUtil;
+import com.yubico.webauthn.attestation.mtc.MtcTrustAnchor;
 import com.yubico.webauthn.extension.uvm.KeyProtectionType;
 import com.yubico.webauthn.extension.uvm.MatcherProtectionType;
 import java.security.cert.X509Certificate;
@@ -281,6 +282,12 @@ public class MetadataStatement {
    */
   String cxpConfigURL;
 
+  /**
+   * Merkle Tree Certificate (MTC) trust anchors associated with this authenticator metadata
+   * statement.
+   */
+  List<MtcTrustAnchor> mtcTrustAnchors;
+
   public MetadataStatement(
       String legalHeader,
       AAID aaid,
@@ -316,6 +323,80 @@ public class MetadataStatement {
       String multiDeviceCredentialSupport,
       AuthenticatorGetInfo authenticatorGetInfo,
       String cxpConfigURL) {
+    this(
+        legalHeader,
+        aaid,
+        aaguid,
+        attestationCertificateKeyIdentifiers,
+        friendlyNames,
+        description,
+        alternativeDescriptions,
+        authenticatorVersion,
+        protocolFamily,
+        schema,
+        upv,
+        authenticationAlgorithms,
+        publicKeyAlgAndEncodings,
+        attestationTypes,
+        userVerificationDetails,
+        keyProtection,
+        isKeyRestricted,
+        isFreshUserVerificationRequired,
+        matcherProtection,
+        cryptoStrength,
+        attachmentHint,
+        tcDisplay,
+        tcDisplayContentType,
+        tcDisplayPNGCharacteristics,
+        attestationRootCertificates,
+        icon,
+        iconDark,
+        providerLogoLight,
+        providerLogoDark,
+        supportedExtensions,
+        keyScope,
+        multiDeviceCredentialSupport,
+        authenticatorGetInfo,
+        cxpConfigURL,
+        null);
+  }
+
+  public MetadataStatement(
+      String legalHeader,
+      AAID aaid,
+      AAGUID aaguid,
+      Set<String> attestationCertificateKeyIdentifiers,
+      Map<String, String> friendlyNames,
+      String description,
+      AlternativeDescriptions alternativeDescriptions,
+      long authenticatorVersion,
+      @NonNull ProtocolFamily protocolFamily,
+      int schema,
+      @NonNull Set<Version> upv,
+      @NonNull Set<AuthenticationAlgorithm> authenticationAlgorithms,
+      @NonNull Set<PublicKeyRepresentationFormat> publicKeyAlgAndEncodings,
+      @NonNull Set<AuthenticatorAttestationType> attestationTypes,
+      Set<Set<VerificationMethodDescriptor>> userVerificationDetails,
+      @NonNull Set<KeyProtectionType> keyProtection,
+      Boolean isKeyRestricted,
+      Boolean isFreshUserVerificationRequired,
+      @NonNull Set<MatcherProtectionType> matcherProtection,
+      Integer cryptoStrength,
+      Set<AttachmentHint> attachmentHint,
+      @NonNull Set<TransactionConfirmationDisplayType> tcDisplay,
+      String tcDisplayContentType,
+      List<DisplayPNGCharacteristicsDescriptor> tcDisplayPNGCharacteristics,
+      @NonNull Set<X509Certificate> attestationRootCertificates,
+      String icon,
+      String iconDark,
+      String providerLogoLight,
+      String providerLogoDark,
+      Set<ExtensionDescriptor> supportedExtensions,
+      String keyScope,
+      String multiDeviceCredentialSupport,
+      AuthenticatorGetInfo authenticatorGetInfo,
+      String cxpConfigURL,
+      List<MtcTrustAnchor> mtcTrustAnchors) {
     this.legalHeader = legalHeader;
     this.aaid = aaid;
     this.aaguid = aaguid;
@@ -351,6 +432,8 @@ public class MetadataStatement {
     this.multiDeviceCredentialSupport = multiDeviceCredentialSupport;
     this.authenticatorGetInfo = authenticatorGetInfo;
     this.cxpConfigURL = cxpConfigURL;
+    this.mtcTrustAnchors =
+        mtcTrustAnchors == null ? null : CollectionUtil.immutableList(mtcTrustAnchors);
   }
 
   /**
@@ -537,5 +620,13 @@ public class MetadataStatement {
    */
   public Optional<String> getCxpConfigURL() {
     return Optional.ofNullable(this.cxpConfigURL);
+  }
+
+  /**
+   * Merkle Tree Certificate (MTC) trust anchors associated with this authenticator metadata
+   * statement.
+   */
+  public Optional<List<MtcTrustAnchor>> getMtcTrustAnchors() {
+    return Optional.ofNullable(this.mtcTrustAnchors);
   }
 }

@@ -24,9 +24,11 @@
 
 package com.yubico.webauthn;
 
+import com.yubico.webauthn.data.AttestationConveyancePreference;
 import com.yubico.webauthn.data.AuthenticatorSelectionCriteria;
 import com.yubico.webauthn.data.PublicKeyCredentialCreationOptions;
 import com.yubico.webauthn.data.PublicKeyCredentialHint;
+import com.yubico.webauthn.data.PublicKeyCredentialParameters;
 import com.yubico.webauthn.data.RegistrationExtensionInputs;
 import com.yubico.webauthn.data.UserIdentity;
 import java.util.Arrays;
@@ -101,17 +103,53 @@ public class StartRegistrationOptions {
    */
   private final List<String> hints;
 
+  /**
+   * Optional per-request override for {@link PublicKeyCredentialCreationOptions#getAttestation()}.
+   */
+  private final AttestationConveyancePreference attestation;
+
+  /**
+   * Ordered list of attestation statement format identifiers that the Relying Party prefers for
+   * this registration operation (e.g. {@code ["mtc", "packed"]}).
+   */
+  private final List<String> attestationFormats;
+
+  /**
+   * Optional per-request override for {@link
+   * PublicKeyCredentialCreationOptions#getPubKeyCredParams()}.
+   */
+  private final List<PublicKeyCredentialParameters> pubKeyCredParams;
+
   private StartRegistrationOptions(
       @NonNull UserIdentity user,
       AuthenticatorSelectionCriteria authenticatorSelection,
       @NonNull RegistrationExtensionInputs extensions,
       Long timeout,
-      List<String> hints) {
+      List<String> hints,
+      AttestationConveyancePreference attestation,
+      List<String> attestationFormats,
+      List<PublicKeyCredentialParameters> pubKeyCredParams) {
     this.user = user;
     this.authenticatorSelection = authenticatorSelection;
     this.extensions = extensions;
     this.timeout = timeout;
     this.hints = hints == null ? Collections.emptyList() : Collections.unmodifiableList(hints);
+    this.attestation = attestation;
+    this.attestationFormats =
+        attestationFormats == null
+            ? Collections.emptyList()
+            : Collections.unmodifiableList(attestationFormats);
+    this.pubKeyCredParams =
+        pubKeyCredParams == null
+            ? Collections.emptyList()
+            : Collections.unmodifiableList(pubKeyCredParams);
+  }
+
+  /**
+   * Optional per-request override for {@link PublicKeyCredentialCreationOptions#getAttestation()}.
+   */
+  public Optional<AttestationConveyancePreference> getAttestation() {
+    return Optional.ofNullable(attestation);
   }
 
   /**
@@ -319,6 +357,84 @@ public class StartRegistrationOptions {
      */
     public StartRegistrationOptionsBuilder hints(@NonNull List<String> hints) {
       this.hints = hints;
+      return this;
+    }
+
+    /**
+     * Optional per-request override for {@link PublicKeyCredentialCreationOptions#getAttestation()}.
+     */
+    public StartRegistrationOptionsBuilder attestation(
+        @NonNull Optional<AttestationConveyancePreference> attestation) {
+      this.attestation = attestation.orElse(null);
+      return this;
+    }
+
+    /**
+     * Optional per-request override for {@link PublicKeyCredentialCreationOptions#getAttestation()}.
+     */
+    public StartRegistrationOptionsBuilder attestation(
+        AttestationConveyancePreference attestation) {
+      this.attestation = attestation;
+      return this;
+    }
+
+    /**
+     * Ordered list of attestation statement format identifiers that the Relying Party prefers, from
+     * most preferred to least preferred (e.g. {@code "mtc", "packed"}).
+     */
+    public StartRegistrationOptionsBuilder attestationFormats(
+        @NonNull String... attestationFormats) {
+      this.attestationFormats = Arrays.asList(attestationFormats);
+      return this;
+    }
+
+    /**
+     * Ordered list of attestation statement format identifiers that the Relying Party prefers, from
+     * most preferred to least preferred (e.g. {@code ["mtc", "packed"]}).
+     */
+    public StartRegistrationOptionsBuilder attestationFormats(
+        @NonNull Optional<List<String>> attestationFormats) {
+      this.attestationFormats = attestationFormats.orElse(null);
+      return this;
+    }
+
+    /**
+     * Ordered list of attestation statement format identifiers that the Relying Party prefers, from
+     * most preferred to least preferred (e.g. {@code ["mtc", "packed"]}).
+     */
+    public StartRegistrationOptionsBuilder attestationFormats(
+        @NonNull List<String> attestationFormats) {
+      this.attestationFormats = attestationFormats;
+      return this;
+    }
+
+    /**
+     * Optional per-request override for {@link
+     * PublicKeyCredentialCreationOptions#getPubKeyCredParams()}.
+     */
+    public StartRegistrationOptionsBuilder pubKeyCredParams(
+        @NonNull PublicKeyCredentialParameters... pubKeyCredParams) {
+      this.pubKeyCredParams = Arrays.asList(pubKeyCredParams);
+      return this;
+    }
+
+    /**
+     * Optional per-request override for {@link
+     * PublicKeyCredentialCreationOptions#getPubKeyCredParams()}.
+     */
+    public StartRegistrationOptionsBuilder pubKeyCredParams(
+        @NonNull Optional<List<PublicKeyCredentialParameters>> pubKeyCredParams) {
+      this.pubKeyCredParams = pubKeyCredParams.orElse(null);
+      return this;
+    }
+
+    /**
+     * Optional per-request override for {@link
+     * PublicKeyCredentialCreationOptions#getPubKeyCredParams()}.
+     */
+    public StartRegistrationOptionsBuilder pubKeyCredParams(
+        @NonNull List<PublicKeyCredentialParameters> pubKeyCredParams) {
+      this.pubKeyCredParams = pubKeyCredParams;
       return this;
     }
   }

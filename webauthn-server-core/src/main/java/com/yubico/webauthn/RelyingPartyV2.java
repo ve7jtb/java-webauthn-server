@@ -27,6 +27,7 @@ package com.yubico.webauthn;
 import com.yubico.internal.util.CollectionUtil;
 import com.yubico.internal.util.OptionalUtil;
 import com.yubico.webauthn.attestation.AttestationTrustSource;
+import com.yubico.webauthn.attestation.mtc.MtcTrustSource;
 import com.yubico.webauthn.data.AssertionExtensionInputs;
 import com.yubico.webauthn.data.AttestationConveyancePreference;
 import com.yubico.webauthn.data.AuthenticatorData;
@@ -213,6 +214,18 @@ public class RelyingPartyV2<C extends CredentialRecord> {
   @NonNull private final Optional<AttestationTrustSource> attestationTrustSource;
 
   /**
+   * An {@link MtcTrustSource} instance to use for looking up Merkle Tree Certificate ({@code fmt:
+   * "mtc"}) trust anchors (from FIDO MDS3 or enterprise vendor manifests).
+   */
+  @NonNull private final Optional<MtcTrustSource> mtcTrustSource;
+
+  /**
+   * Ordered list of attestation statement format identifiers that the Relying Party prefers, from
+   * most preferred to least preferred (e.g. {@code ["mtc", "packed"]}).
+   */
+  @NonNull private final List<String> attestationFormats;
+
+  /**
    * The argument for the {@link PublicKeyCredentialCreationOptions#getPubKeyCredParams()
    * pubKeyCredParams} parameter in registration operations.
    *
@@ -384,6 +397,8 @@ public class RelyingPartyV2<C extends CredentialRecord> {
       @NonNull Optional<AppId> appId,
       @NonNull Optional<AttestationConveyancePreference> attestationConveyancePreference,
       @NonNull Optional<AttestationTrustSource> attestationTrustSource,
+      Optional<MtcTrustSource> mtcTrustSource,
+      List<String> attestationFormats,
       List<PublicKeyCredentialParameters> preferredPubkeyParams,
       boolean allowOriginPort,
       boolean allowOriginSubdomain,
@@ -411,6 +426,18 @@ public class RelyingPartyV2<C extends CredentialRecord> {
     this.appId = appId;
     this.attestationConveyancePreference = attestationConveyancePreference;
     this.attestationTrustSource = attestationTrustSource;
+    if (mtcTrustSource != null && mtcTrustSource.isPresent()) {
+      this.mtcTrustSource = mtcTrustSource;
+    } else if (attestationTrustSource.isPresent()
+        && attestationTrustSource.get() instanceof MtcTrustSource) {
+      this.mtcTrustSource = Optional.of((MtcTrustSource) attestationTrustSource.get());
+    } else {
+      this.mtcTrustSource = Optional.empty();
+    }
+    this.attestationFormats =
+        attestationFormats == null
+            ? Collections.emptyList()
+            : Collections.unmodifiableList(attestationFormats);
     this.preferredPubkeyParams = filterAvailableAlgorithms(preferredPubkeyParams);
     this.allowOriginPort = allowOriginPort;
     this.allowOriginSubdomain = allowOriginSubdomain;
@@ -438,12 +465,24 @@ public class RelyingPartyV2<C extends CredentialRecord> {
 
   public PublicKeyCredentialCreationOptions startRegistration(
       StartRegistrationOptions startRegistrationOptions) {
+    Optional<AttestationConveyancePreference> effectiveAttestation =
+        OptionalUtil.orElseOptional(
+            startRegistrationOptions.getAttestation(), () -> attestationConveyancePreference);
+    List<String> effectiveFormats =
+        !startRegistrationOptions.getAttestationFormats().isEmpty()
+            ? startRegistrationOptions.getAttestationFormats()
+            : attestationFormats;
+    List<PublicKeyCredentialParameters> effectivePubKeyCredParams =
+        !startRegistrationOptions.getPubKeyCredParams().isEmpty()
+            ? startRegistrationOptions.getPubKeyCredParams()
+            : preferredPubkeyParams;
+
     PublicKeyCredentialCreationOptionsBuilder builder =
         PublicKeyCredentialCreationOptions.builder()
             .rp(identity)
             .user(startRegistrationOptions.getUser())
             .challenge(generateChallenge())
-            .pubKeyCredParams(preferredPubkeyParams)
+            .pubKeyCredParams(effectivePubKeyCredParams)
             .excludeCredentials(
                 credentialRepository
                     .getCredentialDescriptorsForUserHandle(
@@ -462,7 +501,11 @@ public class RelyingPartyV2<C extends CredentialRecord> {
                             .build()))
             .timeout(startRegistrationOptions.getTimeout())
             .hints(startRegistrationOptions.getHints());
-    attestationConveyancePreference.ifPresent(builder::attestation);
+    effectiveAttestation.ifPresent(builder::attestation);
+    if (!effectiveFormats.isEmpty()
+        && effectiveAttestation.map(a -> a != AttestationConveyancePreference.NONE).orElse(true)) {
+      builder.attestationFormats(effectiveFormats);
+    }
     return builder.build();
   }
 
@@ -570,6 +613,26 @@ public class RelyingPartyV2<C extends CredentialRecord> {
     private @NonNull Optional<AttestationConveyancePreference> attestationConveyancePreference =
         Optional.empty();
     private @NonNull Optional<AttestationTrustSource> attestationTrustSource = Optional.empty();
+    private @NonNull Optional<MtcTrustSource> mtcTrustSource = Optional.empty();
+
+    public RelyingPartyV2Builder<C> mtcTrustSource(
+        @NonNull Optional<MtcTrustSource> mtcTrustSource) {
+      this.mtcTrustSource = mtcTrustSource;
+      return this;
+    }
+
+    public RelyingPartyV2Builder<C> mtcTrustSource(@NonNull MtcTrustSource mtcTrustSource) {
+      return this.mtcTrustSource(Optional.of(mtcTrustSource));
+    }
+
+    public RelyingPartyV2Builder<C> attestationFormats(@NonNull List<String> attestationFormats) {
+      this.attestationFormats = attestationFormats;
+      return this;
+    }
+
+    public RelyingPartyV2Builder<C> attestationFormats(@NonNull String... attestationFormats) {
+      return this.attestationFormats(Arrays.asList(attestationFormats));
+    }
 
     /**
      * The allowed origins that returned authenticator responses will be compared against.

@@ -60,17 +60,21 @@ public class ClientRegistrationExtensionOutputs implements ClientExtensionOutput
 
   private final Extensions.Prf.PrfRegistrationOutput prf;
 
+  private final Extensions.MtcDebug.MtcDebugRegistrationOutput mtcDebug;
+
   @JsonCreator
   private ClientRegistrationExtensionOutputs(
       @JsonProperty("appidExclude") Boolean appidExclude,
       @JsonProperty("credProps")
           Extensions.CredentialProperties.CredentialPropertiesOutput credProps,
       @JsonProperty("largeBlob") Extensions.LargeBlob.LargeBlobRegistrationOutput largeBlob,
-      @JsonProperty("prf") Extensions.Prf.PrfRegistrationOutput prf) {
+      @JsonProperty("prf") Extensions.Prf.PrfRegistrationOutput prf,
+      @JsonProperty("mtcDebug") Extensions.MtcDebug.MtcDebugRegistrationOutput mtcDebug) {
     this.appidExclude = appidExclude;
     this.credProps = credProps;
     this.largeBlob = largeBlob;
     this.prf = prf;
+    this.mtcDebug = mtcDebug;
   }
 
   @Override
@@ -88,6 +92,9 @@ public class ClientRegistrationExtensionOutputs implements ClientExtensionOutput
     }
     if (prf != null) {
       ids.add(Extensions.Prf.EXTENSION_ID);
+    }
+    if (mtcDebug != null) {
+      ids.add(Extensions.MtcDebug.EXTENSION_ID);
     }
     return ids;
   }
@@ -147,5 +154,13 @@ public class ClientRegistrationExtensionOutputs implements ClientExtensionOutput
    */
   public Optional<Extensions.Prf.PrfRegistrationOutput> getPrf() {
     return Optional.ofNullable(prf);
+  }
+
+  /**
+   * The client extension output for the MTC Attestation Debugging (<code>mtcDebug</code>)
+   * extension, if any.
+   */
+  public Optional<Extensions.MtcDebug.MtcDebugRegistrationOutput> getMtcDebug() {
+    return Optional.ofNullable(mtcDebug);
   }
 }

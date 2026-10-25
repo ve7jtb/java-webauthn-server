@@ -47,6 +47,33 @@ input[type="text"] {
   margin: 0;
 }
 
+.alg-btn {
+  margin: 2px 3px 2px 0;
+  padding: 3px 8px;
+  border: 1px solid #bbb;
+  border-radius: 4px;
+  background: #f5f5f5;
+  color: #666;
+  cursor: pointer;
+  font-size: 0.9em;
+}
+.alg-btn.active {
+  background: #28a745;
+  color: #fff;
+  border-color: #1e7e34;
+  font-weight: bold;
+}
+.alg-btn.pqc.active {
+  background: #0069d9;
+  border-color: #005cbf;
+}
+.alg-preset-btn {
+  margin: 2px 4px 2px 0;
+  padding: 2px 7px;
+  font-size: 0.85em;
+  cursor: pointer;
+}
+
   </style>
 
   <script src="lib/text-encoding-0.7.0/encoding.js"></script>
@@ -218,20 +245,125 @@ function getIndexActions() {
   ;
 }
 
-function getRegisterRequest(urls, username, displayName, credentialNickname, requireResidentKey) {
-  return fetch(urls.register, {
-    body: new URLSearchParams({
+function getSelectedPubKeyCredParamsString() {
+  const input = document.getElementById('pubKeyCredParamsInput');
+  return input ? input.value.trim() : '';
+}
+
+function getSelectedAlgIds() {
+  const raw = getSelectedPubKeyCredParamsString();
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map(s => parseInt(s.trim(), 10))
+    .filter(n => !Number.isNaN(n));
+}
+
+function syncAlgButtonsFromInput() {
+  const selected = new Set(getSelectedAlgIds());
+  document.querySelectorAll('.alg-btn').forEach(btn => {
+    const algId = parseInt(btn.getAttribute('data-alg'), 10);
+    if (selected.has(algId)) {
+      btn.classList.add('active');
+    } else {
+      btn.classList.remove('active');
+    }
+  });
+}
+
+function setSelectedAlgIds(algIds) {
+  const input = document.getElementById('pubKeyCredParamsInput');
+  if (input) {
+    input.value = algIds.join(',');
+  }
+  syncAlgButtonsFromInput();
+}
+
+function toggleAlgButton(algId) {
+  const current = getSelectedAlgIds();
+  const idx = current.indexOf(algId);
+  if (idx >= 0) {
+    if (current.length > 1) {
+      current.splice(idx, 1);
+    }
+  } else {
+    current.push(algId);
+  }
+  setSelectedAlgIds(current);
+}
+
+function applySelectedAlgsToRequest(request) {
+  const algIds = getSelectedAlgIds();
+  if (
+    algIds.length > 0 &&
+    request &&
+    request.publicKeyCredentialCreationOptions
+  ) {
+    request.publicKeyCredentialCreationOptions.pubKeyCredParams = algIds.map(alg => ({
+      alg,
+      type: 'public-key',
+    }));
+  }
+  const sendExcludeEl = document.getElementById('sendExcludeCredentialsCheckbox');
+  if (
+    sendExcludeEl &&
+    !sendExcludeEl.checked &&
+    request &&
+    request.publicKeyCredentialCreationOptions
+  ) {
+    delete request.publicKeyCredentialCreationOptions.excludeCredentials;
+  }
+  return request;
+}
+
+function getRegisterRequest(urls, username, displayName, credentialNickname, requireResidentKey, overrides) {
+  const attestation = (overrides && overrides.attestation) || document.getElementById('attestationPreference').value;
+  const attestationFormats = (overrides && overrides.attestationFormats) || document.getElementById('attestationFormats').value;
+  const pubKeyCredParams = (overrides && overrides.pubKeyCredParams) || getSelectedPubKeyCredParamsString();
+  const mtcDebug = (overrides && typeof overrides.mtcDebug === 'boolean')
+    ? overrides.mtcDebug
+    : document.getElementById('mtcDebugCheckbox').checked;
+
+  const doFetch = () => {
+    const params = {
       username,
       displayName: displayName || username,
-      credentialNickname,
-      requireResidentKey,
-      sessionToken: session.sessionToken || null,
-    }),
-    method: 'POST',
-  })
-    .then(response => response.json())
+      credentialNickname: credentialNickname || '',
+      requireResidentKey: String(Boolean(requireResidentKey)),
+      attestation,
+      attestationFormats,
+      pubKeyCredParams,
+      mtcDebug: String(mtcDebug),
+    };
+    if (session.sessionToken) {
+      params.sessionToken = session.sessionToken;
+    }
+    return fetch(urls.register, {
+      body: new URLSearchParams(params),
+      method: 'POST',
+    }).then(response => response.json());
+  };
+
+  return doFetch()
+    .then(data => {
+      if (!data.success && data.messages && data.messages.some(m => m.includes('already registered'))) {
+        // Stale or different demo user from a previous run; reset the demo account so MakeCredential proceeds
+        session = {};
+        return fetch(urls.deleteAccount, {
+          method: 'DELETE',
+          body: new URLSearchParams({ username }),
+        }).then(() => doFetch());
+      }
+      return data;
+    })
     .then(updateSession)
     .then(rejectIfNotSuccess)
+    .then(data => {
+      if (data && data.request) {
+        applySelectedAlgsToRequest(data.request);
+      }
+      return data;
+    })
   ;
 }
 
@@ -359,6 +491,10 @@ async function register(event, requireResidentKey) {
         showDeviceInfo(nicknameInfo);
       }
 
+      if (data.mtcAttestation) {
+        addMessage(`Verified fmt="mtc" | keySource: ${data.mtcAttestation.keySource} | caId: ${data.mtcAttestation.caId} | serial: ${data.mtcAttestation.serial} | enterprise: ${data.mtcAttestation.enterprise} | deviceSerial: ${data.mtcAttestation.deviceSerial || 'none'}`);
+      }
+
       if (!data.attestationTrusted) {
         addMessage("Warning: Attestation is not trusted!");
       }
@@ -369,7 +505,9 @@ async function register(event, requireResidentKey) {
     console.error('Registration failed', err);
 
     if (err.name === 'NotAllowedError') {
-      if (request.publicKeyCredentialCreationOptions.excludeCredentials
+      if (request
+          && request.publicKeyCredentialCreationOptions
+          && request.publicKeyCredentialCreationOptions.excludeCredentials
           && request.publicKeyCredentialCreationOptions.excludeCredentials.length > 0
       ) {
         addMessage('Credential creation failed, probably because an already registered credential is avaiable.');
@@ -488,6 +626,77 @@ function usernameChanged(event) {
   displayNameField.placeholder = event.target.value;
 }
 
+async function simulateMtcCeremony(mode) {
+  const usernameInput = document.getElementById('username');
+  if (!usernameInput.value) {
+    usernameInput.value = 'mtc-demo-user';
+  }
+  const username = usernameInput.value;
+  const displayName = document.getElementById('displayName').value || username;
+  const credentialNickname = document.getElementById('credentialNickname').value || `MTC (${mode})`;
+
+  const isEnterprise = mode.startsWith('enterprise');
+  const isDebug = mode.includes('mtc-debug');
+  document.getElementById('attestationPreference').value = isEnterprise ? 'enterprise' : 'direct';
+  document.getElementById('attestationFormats').value = 'mtc,packed';
+  document.getElementById('mtcDebugCheckbox').checked = isDebug;
+
+  resetDisplays();
+  setStatus(`Starting simulated MTC registration (${mode})...`);
+
+  try {
+    const rootUrls = await getIndexActions();
+    const { request } = await getRegisterRequest(rootUrls, username, displayName, credentialNickname, false, {
+      attestation: isEnterprise ? 'enterprise' : 'direct',
+      attestationFormats: 'mtc,packed',
+      mtcDebug: isDebug,
+    });
+    showRequest(request);
+    setStatus(`Simulating fmt="mtc" authenticator (${mode}) and verifying on server...`);
+
+    const resp = await fetch('api/v1/register/simulate-mtc?pretty', {
+      method: 'POST',
+      body: new URLSearchParams({
+        requestId: request.requestId,
+        mode,
+        origin: window.location.origin,
+      }),
+    });
+    const data = await resp.json();
+    updateSession(data);
+    if (data && data.response && data.response.credential) {
+      showAuthenticatorResponse(data.response.credential);
+    }
+    showServerResponse(data);
+    if (data && data.success) {
+      setStatus(`MTC Registration (${mode}) verified! KeySource=${data.mtcAttestation?.keySource}, Trusted=${data.attestationTrusted}`);
+      if (data.mtcAttestation) {
+        addMessage(`Verified fmt="mtc" | keySource: ${data.mtcAttestation.keySource} | caId: ${data.mtcAttestation.caId} | serial: ${data.mtcAttestation.serial} | enterprise: ${data.mtcAttestation.enterprise} | deviceSerial: ${data.mtcAttestation.deviceSerial || 'none'}`);
+      }
+    } else {
+      setStatus('MTC Registration failed.');
+    }
+  } catch (err) {
+    setStatus('MTC simulation failed.');
+    console.error(err);
+    if (err && err.messages) {
+      addMessages(err.messages);
+    }
+  }
+}
+
+function registerMtcWithBrowser(mode) {
+  const isEnterprise = mode.startsWith('enterprise');
+  const isDebug = mode.includes('mtc-debug');
+  document.getElementById('attestationPreference').value = isEnterprise ? 'enterprise' : 'direct';
+  document.getElementById('attestationFormats').value = 'mtc,packed';
+  document.getElementById('mtcDebugCheckbox').checked = isDebug;
+  if (!document.getElementById('credentialNickname').value) {
+    document.getElementById('credentialNickname').value = `MTC (${mode})`;
+  }
+  return register(null, false);
+}
+
 function init() {
   hideDeviceInfo();
 
@@ -498,8 +707,31 @@ function init() {
   document.getElementById("authenticateButton").onclick = authenticate;
   document.getElementById("deregisterButton").onclick = deregister;
   document.getElementById("logoutButton").onclick = logout;
+  document.getElementById("browserBatchMdsButton").onclick = () => registerMtcWithBrowser('batch-mds');
+  document.getElementById("browserEnterpriseManifestButton").onclick = () => registerMtcWithBrowser('enterprise-manifest');
+  document.getElementById("browserEnterpriseDebugButton").onclick = () => registerMtcWithBrowser('enterprise-mtc-debug');
+  document.getElementById("simBatchMdsButton").onclick = () => simulateMtcCeremony('batch-mds');
+  document.getElementById("simEnterpriseManifestButton").onclick = () => simulateMtcCeremony('enterprise-manifest');
+  document.getElementById("simEnterpriseDebugButton").onclick = () => simulateMtcWithServerNotice('enterprise-mtc-debug');
+  document.getElementById("simEnterpriseKeyRefDebugButton").onclick = () => simulateMtcWithServerNotice('enterprise-keyref-mtc-debug');
+
+  document.querySelectorAll('.alg-btn').forEach(btn => {
+    btn.onclick = () => toggleAlgButton(parseInt(btn.getAttribute('data-alg'), 10));
+  });
+  document.getElementById("pubKeyCredParamsInput").oninput = syncAlgButtonsFromInput;
+  document.getElementById("presetPqcOnlyBtn").onclick = () => setSelectedAlgIds([-48, -49, -50]);
+  document.getElementById("presetMlDsa44OnlyBtn").onclick = () => setSelectedAlgIds([-48]);
+  document.getElementById("presetMlDsa44Es256Btn").onclick = () => setSelectedAlgIds([-48, -7]);
+  document.getElementById("presetEs256OnlyBtn").onclick = () => setSelectedAlgIds([-7]);
+  document.getElementById("presetClassicalOnlyBtn").onclick = () => setSelectedAlgIds([-7, -8, -35, -36, -257]);
+  document.getElementById("presetAllAlgsBtn").onclick = () => setSelectedAlgIds([-7, -8, -35, -36, -53, -257, -258, -259, -48, -49, -50]);
+  syncAlgButtonsFromInput();
 
   return false;
+}
+
+function simulateMtcWithServerNotice(mode) {
+  return simulateMtcCeremony(mode);
 }
 
 window.onload = init;
@@ -512,16 +744,78 @@ window.onload = init;
 <div class="base">
   <div class="content">
 
-    <h1> java-webauthn-server demo </h1>
+    <h1> java-webauthn-server demo (with MTC Attestation) </h1>
 
     <form class="horizontal">
       <div class="row">
         <label for="username">Username:</label>
-        <div><input type="text" id="username" /></div>
+        <div><input type="text" id="username" value="mtc-user" /></div>
       </div>
       <div class="row">
         <label for="displayName">Display name:</label>
-        <div><input type="text" id="displayName"/></div>
+        <div><input type="text" id="displayName" placeholder="mtc-user"/></div>
+      </div>
+      <div class="row">
+        <label for="attestationPreference">Attestation conveyance:</label>
+        <div>
+          <select id="attestationPreference">
+            <option value="direct" selected>direct (Batch MDS)</option>
+            <option value="enterprise">enterprise (Vendor Manifest / mtc-debug)</option>
+            <option value="none">none</option>
+          </select>
+        </div>
+        <label for="attestationFormats">Attestation formats:</label>
+        <div>
+          <input type="text" id="attestationFormats" value="mtc,packed" />
+        </div>
+      </div>
+      <div class="row">
+        <label for="mtcDebugCheckbox">Request <code>mtc-debug</code> extension:</label>
+        <div>
+          <input type="checkbox" id="mtcDebugCheckbox" />
+          <span>Include <code>extensions.mtcDebug = true</code></span>
+        </div>
+        <label for="sendExcludeCredentialsCheckbox">Send <code>excludeCredentials</code>:</label>
+        <div>
+          <input type="checkbox" id="sendExcludeCredentialsCheckbox" />
+          <span>Include <code>excludeCredentials</code> list in request</span>
+        </div>
+      </div>
+
+      <div class="row">
+        <label>Algorithms (<code>pubKeyCredParams</code>):</label>
+        <div style="max-width: 720px;">
+          <div style="margin-bottom: 4px;">
+            <b>PQC (ML-DSA):</b>
+            <button type="button" class="alg-btn pqc active" data-alg="-48" title="COSE alg -48">ML-DSA-44 (-48)</button>
+            <button type="button" class="alg-btn pqc active" data-alg="-49" title="COSE alg -49">ML-DSA-65 (-49)</button>
+            <button type="button" class="alg-btn pqc active" data-alg="-50" title="COSE alg -50">ML-DSA-87 (-50)</button>
+          </div>
+          <div style="margin-bottom: 4px;">
+            <b>Classical:</b>
+            <button type="button" class="alg-btn active" data-alg="-7" title="COSE alg -7">ES256 (-7)</button>
+            <button type="button" class="alg-btn active" data-alg="-8" title="COSE alg -8">EdDSA (-8)</button>
+            <button type="button" class="alg-btn active" data-alg="-35" title="COSE alg -35">ES384 (-35)</button>
+            <button type="button" class="alg-btn active" data-alg="-36" title="COSE alg -36">ES512 (-36)</button>
+            <button type="button" class="alg-btn active" data-alg="-53" title="COSE alg -53">Ed448 (-53)</button>
+            <button type="button" class="alg-btn active" data-alg="-257" title="COSE alg -257">RS256 (-257)</button>
+            <button type="button" class="alg-btn active" data-alg="-258" title="COSE alg -258">RS384 (-258)</button>
+            <button type="button" class="alg-btn active" data-alg="-259" title="COSE alg -259">RS512 (-259)</button>
+          </div>
+          <div style="margin-bottom: 4px;">
+            <b>Presets:</b>
+            <button type="button" class="alg-preset-btn" id="presetPqcOnlyBtn">PQC Only (ML-DSA)</button>
+            <button type="button" class="alg-preset-btn" id="presetMlDsa44OnlyBtn">ML-DSA-44 (-48) Only</button>
+            <button type="button" class="alg-preset-btn" id="presetMlDsa44Es256Btn">ML-DSA-44 + ES256 (-48, -7)</button>
+            <button type="button" class="alg-preset-btn" id="presetEs256OnlyBtn">ES256 (-7) Only</button>
+            <button type="button" class="alg-preset-btn" id="presetClassicalOnlyBtn">Classical Only (No PQC)</button>
+            <button type="button" class="alg-preset-btn" id="presetAllAlgsBtn">All Algorithms</button>
+          </div>
+          <div>
+            <small>Ordered COSE algorithm IDs:</small>
+            <input type="text" id="pubKeyCredParamsInput" value="-7,-8,-35,-36,-53,-257,-258,-259,-48,-49,-50" style="width: 340px;" />
+          </div>
+        </div>
       </div>
 
       <div class="row">
@@ -535,6 +829,49 @@ window.onload = init;
         <div>
           <button type="button" id="registerRkButton">
             Create account with passkey
+          </button>
+        </div>
+      </div>
+
+      <div class="row">
+        <label>Browser <code>MakeCredential</code> (<code>fmt: "mtc"</code>):</label>
+        <div>
+          <button type="button" id="browserBatchMdsButton">
+            MakeCredential: Batch MTC (direct)
+          </button>
+        </div>
+        <div>
+          <button type="button" id="browserEnterpriseManifestButton">
+            MakeCredential: Enterprise MTC
+          </button>
+        </div>
+        <div>
+          <button type="button" id="browserEnterpriseDebugButton">
+            MakeCredential: Enterprise + mtc-debug
+          </button>
+        </div>
+      </div>
+
+      <div class="row">
+        <label>Server-side mock (no browser prompt):</label>
+        <div>
+          <button type="button" id="simBatchMdsButton">
+            Simulate Batch MTC (Server Mock)
+          </button>
+        </div>
+        <div>
+          <button type="button" id="simEnterpriseManifestButton">
+            Simulate Enterprise MTC (Server Mock)
+          </button>
+        </div>
+        <div>
+          <button type="button" id="simEnterpriseDebugButton">
+            Simulate Enterprise + mtc-debug (Server Mock)
+          </button>
+        </div>
+        <div>
+          <button type="button" id="simEnterpriseKeyRefDebugButton">
+            Simulate Proof-less mtcKeyRef + mtc-debug (Server Mock)
           </button>
         </div>
       </div>

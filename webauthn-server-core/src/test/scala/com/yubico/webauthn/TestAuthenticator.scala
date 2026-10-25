@@ -164,7 +164,7 @@ object TestAuthenticator {
   def sha256(b: ByteArray): ByteArray =
     new ByteArray(MessageDigest.getInstance("SHA-256").digest(b.getBytes))
 
-  sealed trait AttestationMaker {
+  trait AttestationMaker {
     val format: String
     def makeAttestationStatement(
         authDataBytes: ByteArray,

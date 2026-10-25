@@ -60,6 +60,7 @@ public final class RegistrationExtensionInputs implements ExtensionInputs {
   private final Extensions.LargeBlob.LargeBlobRegistrationInput largeBlob;
   private final Extensions.Prf.PrfRegistrationInput prf;
   private final Boolean uvm;
+  private final Boolean mtcDebug;
 
   private RegistrationExtensionInputs(
       AppId appidExclude,
@@ -67,13 +68,15 @@ public final class RegistrationExtensionInputs implements ExtensionInputs {
       Extensions.CredentialProtection.CredentialProtectionInput credProtect,
       Extensions.LargeBlob.LargeBlobRegistrationInput largeBlob,
       Extensions.Prf.PrfRegistrationInput prf,
-      Boolean uvm) {
+      Boolean uvm,
+      Boolean mtcDebug) {
     this.appidExclude = appidExclude;
     this.credProps = credProps;
     this.credProtect = credProtect;
     this.largeBlob = largeBlob;
     this.prf = prf;
     this.uvm = uvm;
+    this.mtcDebug = mtcDebug;
   }
 
   @JsonCreator
@@ -85,7 +88,8 @@ public final class RegistrationExtensionInputs implements ExtensionInputs {
       @JsonProperty("enforceCredentialProtectionPolicy") Boolean enforceCredProtectPolicy,
       @JsonProperty("largeBlob") Extensions.LargeBlob.LargeBlobRegistrationInput largeBlob,
       @JsonProperty("prf") Extensions.Prf.PrfRegistrationInput prf,
-      @JsonProperty("uvm") Boolean uvm) {
+      @JsonProperty("uvm") Boolean uvm,
+      @JsonProperty("mtcDebug") Boolean mtcDebug) {
     this(
         appidExclude,
         credProps,
@@ -99,7 +103,8 @@ public final class RegistrationExtensionInputs implements ExtensionInputs {
             .orElse(null),
         largeBlob,
         prf,
-        uvm);
+        uvm,
+        mtcDebug);
   }
 
   /**
@@ -116,7 +121,8 @@ public final class RegistrationExtensionInputs implements ExtensionInputs {
         this.credProtect != null ? this.credProtect : other.credProtect,
         this.largeBlob != null ? this.largeBlob : other.largeBlob,
         this.prf != null ? this.prf : other.prf,
-        this.uvm != null ? this.uvm : other.uvm);
+        this.uvm != null ? this.uvm : other.uvm,
+        this.mtcDebug != null ? this.mtcDebug : other.mtcDebug);
   }
 
   /**
@@ -237,6 +243,15 @@ public final class RegistrationExtensionInputs implements ExtensionInputs {
   }
 
   /**
+   * @return The value of the MTC Attestation Debugging Extension (<code>mtcDebug</code>) input if
+   *     configured, empty otherwise.
+   */
+  @JsonProperty("mtcDebug")
+  public Optional<Boolean> getMtcDebug() {
+    return Optional.ofNullable(mtcDebug);
+  }
+
+  /**
    * @return The extension identifiers of all extensions configured.
    * @see <a href="https://www.w3.org/TR/2021/REC-webauthn-2-20210408/#sctn-extension-id">§9.1.
    *     Extension Identifiers</a>
@@ -261,6 +276,9 @@ public final class RegistrationExtensionInputs implements ExtensionInputs {
     }
     if (getUvm()) {
       ids.add(Extensions.Uvm.EXTENSION_ID);
+    }
+    if (mtcDebug != null) {
+      ids.add(Extensions.MtcDebug.EXTENSION_ID);
     }
     return Collections.unmodifiableSet(ids);
   }
@@ -450,6 +468,30 @@ public final class RegistrationExtensionInputs implements ExtensionInputs {
     /** For compatibility with {@link Builder}(toBuilder = true) */
     private RegistrationExtensionInputsBuilder uvm(Boolean uvm) {
       this.uvm = uvm;
+      return this;
+    }
+
+    /**
+     * Enable the MTC Attestation Debugging Extension (<code>mtcDebug</code>).
+     */
+    public RegistrationExtensionInputsBuilder mtcDebug() {
+      this.mtcDebug = true;
+      return this;
+    }
+
+    /**
+     * Enable or disable the MTC Attestation Debugging Extension (<code>mtcDebug</code>).
+     */
+    public RegistrationExtensionInputsBuilder mtcDebug(Boolean mtcDebug) {
+      this.mtcDebug = mtcDebug;
+      return this;
+    }
+
+    /**
+     * Enable or disable the MTC Attestation Debugging Extension (<code>mtcDebug</code>).
+     */
+    public RegistrationExtensionInputsBuilder mtcDebug(@lombok.NonNull Optional<Boolean> mtcDebug) {
+      this.mtcDebug = mtcDebug.orElse(null);
       return this;
     }
   }

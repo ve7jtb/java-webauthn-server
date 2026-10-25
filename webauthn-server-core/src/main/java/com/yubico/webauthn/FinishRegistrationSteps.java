@@ -32,9 +32,13 @@ import com.yubico.internal.util.CertificateParser;
 import com.yubico.internal.util.OptionalUtil;
 import com.yubico.webauthn.attestation.AttestationTrustSource;
 import com.yubico.webauthn.attestation.AttestationTrustSource.TrustRootsResult;
+import com.yubico.webauthn.attestation.mtc.MtcAttestationInfo;
+import com.yubico.webauthn.attestation.mtc.MtcTrustSource;
+import com.yubico.webauthn.data.AttestationConveyancePreference;
 import com.yubico.webauthn.data.AttestationObject;
 import com.yubico.webauthn.data.AttestationType;
 import com.yubico.webauthn.data.AuthenticatorAttestationResponse;
+import com.yubico.webauthn.data.AuthenticatorRegistrationExtensionOutputs;
 import com.yubico.webauthn.data.AuthenticatorSelectionCriteria;
 import com.yubico.webauthn.data.ByteArray;
 import com.yubico.webauthn.data.ClientRegistrationExtensionOutputs;
@@ -85,11 +89,44 @@ final class FinishRegistrationSteps {
   private final String rpId;
   private final boolean allowUntrustedAttestation;
   private final Optional<AttestationTrustSource> attestationTrustSource;
+  private final Optional<MtcTrustSource> mtcTrustSource;
   private final CredentialRepositoryV2<?> credentialRepositoryV2;
   private final Clock clock;
   private final boolean allowOriginPort;
   private final boolean allowOriginSubdomain;
   private final boolean isConditionalCreate;
+
+  FinishRegistrationSteps(
+      PublicKeyCredentialCreationOptions request,
+      PublicKeyCredential<AuthenticatorAttestationResponse, ClientRegistrationExtensionOutputs>
+          response,
+      Optional<ByteArray> callerTokenBindingId,
+      Set<String> origins,
+      String rpId,
+      boolean allowUntrustedAttestation,
+      Optional<AttestationTrustSource> attestationTrustSource,
+      CredentialRepositoryV2<?> credentialRepositoryV2,
+      Clock clock,
+      boolean allowOriginPort,
+      boolean allowOriginSubdomain,
+      boolean isConditionalCreate) {
+    this(
+        request,
+        response,
+        callerTokenBindingId,
+        origins,
+        rpId,
+        allowUntrustedAttestation,
+        attestationTrustSource,
+        attestationTrustSource
+            .filter(ts -> ts instanceof MtcTrustSource)
+            .map(ts -> (MtcTrustSource) ts),
+        credentialRepositoryV2,
+        clock,
+        allowOriginPort,
+        allowOriginSubdomain,
+        isConditionalCreate);
+  }
 
   static FinishRegistrationSteps fromV1(RelyingParty rp, FinishRegistrationOptions options) {
     return new FinishRegistrationSteps(
@@ -100,6 +137,7 @@ final class FinishRegistrationSteps {
         rp.getIdentity().getId(),
         rp.isAllowUntrustedAttestation(),
         rp.getAttestationTrustSource(),
+        rp.getMtcTrustSource(),
         new CredentialRepositoryV1ToV2Adapter(rp.getCredentialRepository()),
         rp.getClock(),
         rp.isAllowOriginPort(),
@@ -116,6 +154,7 @@ final class FinishRegistrationSteps {
         rp.getIdentity().getId(),
         rp.isAllowUntrustedAttestation(),
         rp.getAttestationTrustSource(),
+        rp.getMtcTrustSource(),
         rp.getCredentialRepository(),
         rp.getClock(),
         rp.isAllowOriginPort(),
@@ -386,6 +425,26 @@ final class FinishRegistrationSteps {
     @Override
     public void validate() {
       Extensions.CredentialProtection.validateExtensionOutput(request, response);
+      AuthenticatorRegistrationExtensionOutputs.fromAuthenticatorData(
+              attestation.getAuthenticatorData())
+          .flatMap(AuthenticatorRegistrationExtensionOutputs::getMtcDebug)
+          .ifPresent(
+              mtcDebug -> {
+                assertTrue(
+                    !mtcDebug.getDeviceSerial().isPresent()
+                        || request.getAttestation() == AttestationConveyancePreference.ENTERPRISE,
+                    "mtc-debug extension contains deviceSerial when enterprise attestation was not requested.");
+              });
+      response
+          .getClientExtensionResults()
+          .getMtcDebug()
+          .ifPresent(
+              clientMtcDebug -> {
+                assertTrue(
+                    !clientMtcDebug.getDeviceSerial().isPresent()
+                        || request.getAttestation() == AttestationConveyancePreference.ENTERPRISE,
+                    "clientExtensionResults.mtcDebug contains deviceSerial when enterprise attestation was not requested.");
+              });
     }
 
     @Override
@@ -439,24 +498,53 @@ final class FinishRegistrationSteps {
 
     @Override
     public void validate() {
-      attestationStatementVerifier.ifPresent(
-          verifier -> {
-            assertTrue(
-                verifier.verifyAttestationSignature(attestation, clientDataJsonHash),
-                "Invalid attestation signature.");
-          });
+      if (isMtcFormat(attestation.getFormat())) {
+        new MtcAttestationStatementVerifier()
+            .verifyMtcAttestation(
+                attestation,
+                clientDataJsonHash,
+                mtcTrustSource,
+                clock,
+                request.getAttestation(),
+                response.getClientExtensionResults().getMtcDebug());
+      } else {
+        attestationStatementVerifier.ifPresent(
+            verifier -> {
+              assertTrue(
+                  verifier.verifyAttestationSignature(attestation, clientDataJsonHash),
+                  "Invalid attestation signature.");
+            });
+      }
 
       assertTrue(attestationType() != null, "Failed to determine attestation type");
     }
 
     @Override
     public Step20 nextStep() {
-      return new Step20(attestation, attestationType(), attestationTrustPath());
+      Optional<MtcAttestationStatementVerifier.MtcVerificationResult> mtcResult =
+          isMtcFormat(attestation.getFormat())
+              ? Optional.of(
+                  new MtcAttestationStatementVerifier()
+                      .verifyMtcAttestation(
+                          attestation,
+                          clientDataJsonHash,
+                          mtcTrustSource,
+                          clock,
+                          request.getAttestation(),
+                          response.getClientExtensionResults().getMtcDebug()))
+              : Optional.empty();
+      AttestationType resolvedType =
+          mtcResult
+              .map(MtcAttestationStatementVerifier.MtcVerificationResult::getAttestationType)
+              .orElseGet(this::attestationType);
+      return new Step20(attestation, resolvedType, attestationTrustPath(), mtcResult);
     }
 
     public AttestationType attestationType() {
       try {
-        if (attestationStatementVerifier.isPresent()) {
+        if (isMtcFormat(attestation.getFormat())) {
+          return AttestationType.BASIC;
+        } else if (attestationStatementVerifier.isPresent()) {
           return attestationStatementVerifier.get().getAttestationType(attestation);
         } else {
           switch (attestation.getFormat()) {
@@ -491,11 +579,16 @@ final class FinishRegistrationSteps {
     }
   }
 
+  private static boolean isMtcFormat(String format) {
+    return "mtc".equals(format) || "mtc-mds".equals(format);
+  }
+
   @Value
   class Step20 implements Step<Step21> {
     private final AttestationObject attestation;
     private final AttestationType attestationType;
     private final Optional<List<X509Certificate>> attestationTrustPath;
+    private final Optional<MtcAttestationStatementVerifier.MtcVerificationResult> mtcResult;
 
     private final Optional<AttestationTrustSource.TrustRootsResult> trustRoots;
 
@@ -503,9 +596,18 @@ final class FinishRegistrationSteps {
         AttestationObject attestation,
         AttestationType attestationType,
         Optional<List<X509Certificate>> attestationTrustPath) {
+      this(attestation, attestationType, attestationTrustPath, Optional.empty());
+    }
+
+    public Step20(
+        AttestationObject attestation,
+        AttestationType attestationType,
+        Optional<List<X509Certificate>> attestationTrustPath,
+        Optional<MtcAttestationStatementVerifier.MtcVerificationResult> mtcResult) {
       this.attestation = attestation;
       this.attestationType = attestationType;
       this.attestationTrustPath = attestationTrustPath;
+      this.mtcResult = mtcResult;
       this.trustRoots = findTrustRoots();
     }
 
@@ -514,7 +616,7 @@ final class FinishRegistrationSteps {
 
     @Override
     public Step21 nextStep() {
-      return new Step21(attestation, attestationType, attestationTrustPath, trustRoots);
+      return new Step21(attestation, attestationType, attestationTrustPath, trustRoots, mtcResult);
     }
 
     private Optional<AttestationTrustSource.TrustRootsResult> findTrustRoots() {
@@ -549,6 +651,7 @@ final class FinishRegistrationSteps {
     private final AttestationType attestationType;
     private final Optional<List<X509Certificate>> attestationTrustPath;
     private final Optional<AttestationTrustSource.TrustRootsResult> trustRoots;
+    private final Optional<MtcAttestationStatementVerifier.MtcVerificationResult> mtcResult;
 
     private final boolean attestationTrusted;
 
@@ -557,10 +660,20 @@ final class FinishRegistrationSteps {
         AttestationType attestationType,
         Optional<List<X509Certificate>> attestationTrustPath,
         Optional<AttestationTrustSource.TrustRootsResult> trustRoots) {
+      this(attestation, attestationType, attestationTrustPath, trustRoots, Optional.empty());
+    }
+
+    public Step21(
+        AttestationObject attestation,
+        AttestationType attestationType,
+        Optional<List<X509Certificate>> attestationTrustPath,
+        Optional<AttestationTrustSource.TrustRootsResult> trustRoots,
+        Optional<MtcAttestationStatementVerifier.MtcVerificationResult> mtcResult) {
       this.attestation = attestation;
       this.attestationType = attestationType;
       this.attestationTrustPath = attestationTrustPath;
       this.trustRoots = trustRoots;
+      this.mtcResult = mtcResult;
 
       this.attestationTrusted = attestationTrusted();
     }
@@ -574,10 +687,17 @@ final class FinishRegistrationSteps {
 
     @Override
     public Step22 nextStep() {
-      return new Step22(attestationType, attestationTrusted, attestationTrustPath);
+      return new Step22(
+          attestationType,
+          attestationTrusted,
+          attestationTrustPath,
+          mtcResult.map(MtcAttestationStatementVerifier.MtcVerificationResult::getMtcAttestationInfo));
     }
 
     public boolean attestationTrusted() {
+      if (mtcResult.isPresent()) {
+        return mtcResult.get().isTrusted();
+      }
       if (attestationTrustPath.isPresent() && attestationTrustSource.isPresent()) {
         try {
           if (!trustRoots.isPresent() || trustRoots.get().getTrustRoots().isEmpty()) {
@@ -659,18 +779,38 @@ final class FinishRegistrationSteps {
     private final AttestationType attestationType;
     private final boolean attestationTrusted;
     private final Optional<List<X509Certificate>> attestationTrustPath;
+    private final Optional<MtcAttestationInfo> mtcAttestation;
+
+    public Step22(
+        AttestationType attestationType,
+        boolean attestationTrusted,
+        Optional<List<X509Certificate>> attestationTrustPath) {
+      this(attestationType, attestationTrusted, attestationTrustPath, Optional.empty());
+    }
+
+    public Step22(
+        AttestationType attestationType,
+        boolean attestationTrusted,
+        Optional<List<X509Certificate>> attestationTrustPath,
+        Optional<MtcAttestationInfo> mtcAttestation) {
+      this.attestationType = attestationType;
+      this.attestationTrusted = attestationTrusted;
+      this.attestationTrustPath = attestationTrustPath;
+      this.mtcAttestation = mtcAttestation;
+    }
 
     @Override
     public void validate() {
       assertTrue(
-          !credentialRepositoryV2.credentialIdExists(response.getId()),
-          "Credential ID is already registered: %s",
-          response.getId());
+           !credentialRepositoryV2.credentialIdExists(response.getId()),
+           "Credential ID is already registered: %s",
+           response.getId());
     }
 
     @Override
     public Finished nextStep() {
-      return new Finished(attestationType, attestationTrusted, attestationTrustPath);
+      return new Finished(
+          attestationType, attestationTrusted, attestationTrustPath, mtcAttestation);
     }
   }
 
@@ -682,6 +822,25 @@ final class FinishRegistrationSteps {
     private final AttestationType attestationType;
     private final boolean attestationTrusted;
     private final Optional<List<X509Certificate>> attestationTrustPath;
+    private final Optional<MtcAttestationInfo> mtcAttestation;
+
+    public Finished(
+        AttestationType attestationType,
+        boolean attestationTrusted,
+        Optional<List<X509Certificate>> attestationTrustPath) {
+      this(attestationType, attestationTrusted, attestationTrustPath, Optional.empty());
+    }
+
+    public Finished(
+        AttestationType attestationType,
+        boolean attestationTrusted,
+        Optional<List<X509Certificate>> attestationTrustPath,
+        Optional<MtcAttestationInfo> mtcAttestation) {
+      this.attestationType = attestationType;
+      this.attestationTrusted = attestationTrusted;
+      this.attestationTrustPath = attestationTrustPath;
+      this.mtcAttestation = mtcAttestation;
+    }
 
     @Override
     public void validate() {
@@ -697,7 +856,7 @@ final class FinishRegistrationSteps {
     public Optional<RegistrationResult> result() {
       return Optional.of(
           new RegistrationResult(
-              response, attestationTrusted, attestationType, attestationTrustPath));
+              response, attestationTrusted, attestationType, attestationTrustPath, mtcAttestation));
     }
   }
 }

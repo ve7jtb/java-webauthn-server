@@ -30,6 +30,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.yubico.internal.util.CertificateParser;
 import com.yubico.webauthn.RelyingParty.RelyingPartyBuilder;
 import com.yubico.webauthn.attestation.AttestationTrustSource;
+import com.yubico.webauthn.attestation.mtc.MtcAttestationInfo;
 import com.yubico.webauthn.data.AttestationType;
 import com.yubico.webauthn.data.AuthenticatorAttachment;
 import com.yubico.webauthn.data.AuthenticatorAttestationResponse;
@@ -96,16 +97,29 @@ public class RegistrationResult {
   // JavaDoc on getter
   private final List<X509Certificate> attestationTrustPath;
 
+  private final MtcAttestationInfo mtcAttestation;
+
   RegistrationResult(
       PublicKeyCredential<AuthenticatorAttestationResponse, ClientRegistrationExtensionOutputs>
           credential,
       boolean attestationTrusted,
       @NonNull AttestationType attestationType,
       Optional<List<X509Certificate>> attestationTrustPath) {
+    this(credential, attestationTrusted, attestationType, attestationTrustPath, Optional.empty());
+  }
+
+  RegistrationResult(
+      PublicKeyCredential<AuthenticatorAttestationResponse, ClientRegistrationExtensionOutputs>
+          credential,
+      boolean attestationTrusted,
+      @NonNull AttestationType attestationType,
+      Optional<List<X509Certificate>> attestationTrustPath,
+      @NonNull Optional<MtcAttestationInfo> mtcAttestation) {
     this.credential = credential;
     this.attestationTrusted = attestationTrusted;
     this.attestationType = attestationType;
     this.attestationTrustPath = attestationTrustPath.orElse(null);
+    this.mtcAttestation = mtcAttestation.orElse(null);
   }
 
   @JsonCreator
@@ -115,7 +129,8 @@ public class RegistrationResult {
               credential,
       @JsonProperty("attestationTrusted") boolean attestationTrusted,
       @NonNull @JsonProperty("attestationType") AttestationType attestationType,
-      @NonNull @JsonProperty("attestationTrustPath") Optional<List<String>> attestationTrustPath) {
+      @NonNull @JsonProperty("attestationTrustPath") Optional<List<String>> attestationTrustPath,
+      @JsonProperty("mtcAttestation") Optional<MtcAttestationInfo> mtcAttestation) {
     return new RegistrationResult(
         credential,
         attestationTrusted,
@@ -131,7 +146,8 @@ public class RegistrationResult {
                             throw new RuntimeException(e);
                           }
                         })
-                    .collect(Collectors.toList())));
+                    .collect(Collectors.toList())),
+        mtcAttestation == null ? Optional.empty() : mtcAttestation);
   }
 
   /**
@@ -439,5 +455,13 @@ public class RegistrationResult {
                           }
                         })
                     .collect(Collectors.toList()));
+  }
+
+  /**
+   * Verified Merkle Tree Certificate ({@code fmt: "mtc"}) attestation metadata, if the registration
+   * used the {@code "mtc"} attestation statement format.
+   */
+  public Optional<MtcAttestationInfo> getMtcAttestation() {
+    return Optional.ofNullable(mtcAttestation);
   }
 }

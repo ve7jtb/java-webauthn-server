@@ -151,6 +151,12 @@ public class PublicKeyCredentialCreationOptions {
   @NonNull private final AttestationConveyancePreference attestation;
 
   /**
+   * Ordered list of attestation statement format identifiers that the Relying Party prefers, from
+   * most preferred to least preferred (e.g. {@code ["mtc", "packed"]}).
+   */
+  private final List<String> attestationFormats;
+
+  /**
    * Additional parameters requesting additional processing by the client and authenticator.
    *
    * <p>For example, the caller may request that only authenticators with certain capabilities be
@@ -176,6 +182,7 @@ public class PublicKeyCredentialCreationOptions {
       @JsonProperty("excludeCredentials") Set<PublicKeyCredentialDescriptor> excludeCredentials,
       @JsonProperty("authenticatorSelection") AuthenticatorSelectionCriteria authenticatorSelection,
       @JsonProperty("attestation") AttestationConveyancePreference attestation,
+      @JsonProperty("attestationFormats") List<String> attestationFormats,
       @JsonProperty("extensions") RegistrationExtensionInputs extensions) {
     this.rp = rp;
     this.user = user;
@@ -189,6 +196,10 @@ public class PublicKeyCredentialCreationOptions {
             : CollectionUtil.immutableSortedSet(new TreeSet<>(excludeCredentials));
     this.authenticatorSelection = authenticatorSelection;
     this.attestation = attestation == null ? AttestationConveyancePreference.NONE : attestation;
+    this.attestationFormats =
+        attestationFormats == null || attestationFormats.isEmpty()
+            ? null
+            : Collections.unmodifiableList(attestationFormats);
     this.extensions =
         extensions == null ? RegistrationExtensionInputs.builder().build() : extensions;
   }
@@ -264,6 +275,10 @@ public class PublicKeyCredentialCreationOptions {
 
   public Optional<AuthenticatorSelectionCriteria> getAuthenticatorSelection() {
     return Optional.ofNullable(authenticatorSelection);
+  }
+
+  public Optional<List<String>> getAttestationFormats() {
+    return Optional.ofNullable(attestationFormats);
   }
 
   public static PublicKeyCredentialCreationOptionsBuilder.MandatoryStages builder() {
@@ -506,6 +521,26 @@ public class PublicKeyCredentialCreationOptions {
     public PublicKeyCredentialCreationOptionsBuilder authenticatorSelection(
         AuthenticatorSelectionCriteria authenticatorSelection) {
       this.authenticatorSelection = authenticatorSelection;
+      return this;
+    }
+
+    /**
+     * Ordered list of attestation statement format identifiers that the Relying Party prefers, from
+     * most preferred to least preferred (e.g. {@code "mtc", "packed"}).
+     */
+    public PublicKeyCredentialCreationOptionsBuilder attestationFormats(
+        @NonNull String... attestationFormats) {
+      this.attestationFormats = Arrays.asList(attestationFormats);
+      return this;
+    }
+
+    /**
+     * Ordered list of attestation statement format identifiers that the Relying Party prefers, from
+     * most preferred to least preferred (e.g. {@code ["mtc", "packed"]}).
+     */
+    public PublicKeyCredentialCreationOptionsBuilder attestationFormats(
+        @NonNull List<String> attestationFormats) {
+      this.attestationFormats = attestationFormats;
       return this;
     }
   }
