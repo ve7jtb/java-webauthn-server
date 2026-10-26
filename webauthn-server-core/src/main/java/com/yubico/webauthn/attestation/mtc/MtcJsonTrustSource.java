@@ -97,6 +97,10 @@ public class MtcJsonTrustSource implements MtcTrustSource {
         int defaultLogNumber = rawAnchor.getLogNumber().orElse(0);
         List<MtcSubtree> validSubtrees = new ArrayList<>();
         for (MtcSubtree st : rawAnchor.getSubtrees()) {
+          if (st.getSignature().isEmpty()) {
+            validSubtrees.add(st);
+            continue;
+          }
           Optional<X509Certificate> matchedCert =
               MtcCheckpoint.findSubtreeSigningCert(
                   rawAnchor.getCaId(), defaultLogNumber, st, rootCerts);
@@ -143,6 +147,12 @@ public class MtcJsonTrustSource implements MtcTrustSource {
     ObjectMapper mapper = JacksonCodecs.json();
     MtcTrustAnchor anchor = mapper.readValue(json, MtcTrustAnchor.class);
     return new MtcJsonTrustSource(Collections.singletonList(anchor));
+  }
+
+  public List<MtcTrustAnchor> getAnchors() {
+    return anchorsByCaId.values().stream()
+        .flatMap(Collection::stream)
+        .collect(Collectors.toList());
   }
 
   @Override

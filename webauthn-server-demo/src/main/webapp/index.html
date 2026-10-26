@@ -175,10 +175,73 @@ function showAuthenticatorResponse(data) {
     _clientDataJson: data && JSON.parse(new TextDecoder('utf-8').decode(base64url.toByteArray(clientDataJson))),
   }));
 }
+function clearValidationDebug() {
+  const win = document.getElementById('validation-debug-window');
+  if (win) {
+    win.textContent = 'Waiting for MakeCredential ceremony...';
+  }
+  const banner = document.getElementById('validation-result-banner');
+  if (banner) {
+    banner.style.display = 'none';
+    banner.textContent = '';
+  }
+}
+
+function appendValidationDebugLines(lines) {
+  const win = document.getElementById('validation-debug-window');
+  if (!win || !lines || lines.length === 0) return;
+  if (win.textContent === 'Waiting for MakeCredential ceremony...') {
+    win.textContent = '';
+  }
+  const prefix = win.textContent ? win.textContent + '\n' : '';
+  win.textContent = prefix + lines.join('\n');
+  win.scrollTop = win.scrollHeight;
+}
+
+function setValidationResultBanner(isSuccess, summaryText) {
+  const banner = document.getElementById('validation-result-banner');
+  if (!banner) return;
+  banner.style.display = 'block';
+  if (isSuccess) {
+    banner.style.background = '#dcfce7';
+    banner.style.border = '2px solid #16a34a';
+    banner.style.color = '#14532d';
+    banner.textContent = 'SUCCESS: ' + summaryText;
+  } else {
+    banner.style.background = '#fee2e2';
+    banner.style.border = '2px solid #dc2626';
+    banner.style.color = '#7f1d1d';
+    banner.textContent = 'FAILURE: ' + summaryText;
+  }
+}
+
+function renderServerValidationDebug(data) {
+  if (!data) return;
+  if (Array.isArray(data.debugLog) && data.debugLog.length > 0) {
+    appendValidationDebugLines(data.debugLog);
+  }
+  if (data.success === true && (data.attestationType || data.mtcAttestation || data.registration)) {
+    const fmt = data.response?.credential?.response?.attestationObject ? (data.mtcAttestation ? 'mtc' : 'standard') : 'webauthn';
+    const mtcPart = data.mtcAttestation
+      ? ` | keySource=${data.mtcAttestation.keySource} | caId=${data.mtcAttestation.caId} | serial=${data.mtcAttestation.serial}${data.mtcAttestation.deviceSerial ? ` | deviceSerial="${data.mtcAttestation.deviceSerial}"` : ''}${data.mtcAttestation.firmwareVersion != null ? ` | fw=${data.mtcAttestation.firmwareVersion}` : ''}`
+      : '';
+    setValidationResultBanner(
+      true,
+      `MakeCredential Validated (${fmt}) | attestationType=${data.attestationType || 'UNKNOWN'} | attestationTrusted=${Boolean(data.attestationTrusted)}${mtcPart}`
+    );
+  } else if (data.success === false) {
+    const lastMsg = Array.isArray(data.messages) && data.messages.length > 0
+      ? data.messages[data.messages.length - 1]
+      : 'Validation failed on server.';
+    setValidationResultBanner(false, lastMsg);
+  }
+}
+
 function showServerResponse(data) {
   if (data && data.messages) {
     addMessages(data.messages);
   }
+  renderServerValidationDebug(data);
   return showJson('server-response', data);
 }
 
@@ -232,6 +295,7 @@ function showDeviceInfoFidoMds(metadataStatement) {
 
 function resetDisplays() {
   clearMessages();
+  clearValidationDebug();
   showRequest(null);
   showAuthenticatorResponse(null);
   showServerResponse(null);
@@ -369,8 +433,22 @@ function getRegisterRequest(urls, username, displayName, credentialNickname, req
 
 function executeRegisterRequest(request) {
   console.log('executeRegisterRequest', request);
-
-  return webauthnJson.create({ publicKey: request.publicKeyCredentialCreationOptions });
+  const opts = request && request.publicKeyCredentialCreationOptions;
+  if (opts) {
+    const algs = (opts.pubKeyCredParams || []).map(p => p.alg).join(', ');
+    const fmts = (opts.attestationFormats || []).join(', ');
+    appendValidationDebugLines([
+      `[Browser] Calling navigator.credentials.create(...)`,
+      `  • attestation="${opts.attestation || 'none'}" | attestationFormats=[${fmts}]`,
+      `  • pubKeyCredParams=[${algs}] | excludeCredentials=${opts.excludeCredentials ? opts.excludeCredentials.length : 'omitted'} | extensions.mtcDebug=${Boolean(opts.extensions && opts.extensions.mtcDebug)}`
+    ]);
+  }
+  return webauthnJson.create({ publicKey: request.publicKeyCredentialCreationOptions }).then(cred => {
+    appendValidationDebugLines([
+      `[Browser] Authenticator returned PublicKeyCredential (id=${cred.id}) — sending to server for verification...`
+    ]);
+    return cred;
+  });
 }
 
 function submitResponse(url, request, response) {
@@ -503,6 +581,14 @@ async function register(event, requireResidentKey) {
   } catch (err) {
     setStatus('Registration failed.');
     console.error('Registration failed', err);
+    const reason = err.message
+      ? `${err.name || 'Error'}: ${err.message}`
+      : (Array.isArray(err.messages) ? err.messages.join(' | ') : String(err));
+    appendValidationDebugLines([
+      `[Browser / Client Error] ${reason}`,
+      `[RESULT: FAILURE] MakeCredential failed before/during verification: ${reason}`
+    ]);
+    setValidationResultBanner(false, reason);
 
     if (err.name === 'NotAllowedError') {
       if (request
@@ -626,65 +712,6 @@ function usernameChanged(event) {
   displayNameField.placeholder = event.target.value;
 }
 
-async function simulateMtcCeremony(mode) {
-  const usernameInput = document.getElementById('username');
-  if (!usernameInput.value) {
-    usernameInput.value = 'mtc-demo-user';
-  }
-  const username = usernameInput.value;
-  const displayName = document.getElementById('displayName').value || username;
-  const credentialNickname = document.getElementById('credentialNickname').value || `MTC (${mode})`;
-
-  const isEnterprise = mode.startsWith('enterprise');
-  const isDebug = mode.includes('mtc-debug');
-  document.getElementById('attestationPreference').value = isEnterprise ? 'enterprise' : 'direct';
-  document.getElementById('attestationFormats').value = 'mtc,packed';
-  document.getElementById('mtcDebugCheckbox').checked = isDebug;
-
-  resetDisplays();
-  setStatus(`Starting simulated MTC registration (${mode})...`);
-
-  try {
-    const rootUrls = await getIndexActions();
-    const { request } = await getRegisterRequest(rootUrls, username, displayName, credentialNickname, false, {
-      attestation: isEnterprise ? 'enterprise' : 'direct',
-      attestationFormats: 'mtc,packed',
-      mtcDebug: isDebug,
-    });
-    showRequest(request);
-    setStatus(`Simulating fmt="mtc" authenticator (${mode}) and verifying on server...`);
-
-    const resp = await fetch('api/v1/register/simulate-mtc?pretty', {
-      method: 'POST',
-      body: new URLSearchParams({
-        requestId: request.requestId,
-        mode,
-        origin: window.location.origin,
-      }),
-    });
-    const data = await resp.json();
-    updateSession(data);
-    if (data && data.response && data.response.credential) {
-      showAuthenticatorResponse(data.response.credential);
-    }
-    showServerResponse(data);
-    if (data && data.success) {
-      setStatus(`MTC Registration (${mode}) verified! KeySource=${data.mtcAttestation?.keySource}, Trusted=${data.attestationTrusted}`);
-      if (data.mtcAttestation) {
-        addMessage(`Verified fmt="mtc" | keySource: ${data.mtcAttestation.keySource} | caId: ${data.mtcAttestation.caId} | serial: ${data.mtcAttestation.serial} | enterprise: ${data.mtcAttestation.enterprise} | deviceSerial: ${data.mtcAttestation.deviceSerial || 'none'}`);
-      }
-    } else {
-      setStatus('MTC Registration failed.');
-    }
-  } catch (err) {
-    setStatus('MTC simulation failed.');
-    console.error(err);
-    if (err && err.messages) {
-      addMessages(err.messages);
-    }
-  }
-}
-
 function registerMtcWithBrowser(mode) {
   const isEnterprise = mode.startsWith('enterprise');
   const isDebug = mode.includes('mtc-debug');
@@ -710,10 +737,6 @@ function init() {
   document.getElementById("browserBatchMdsButton").onclick = () => registerMtcWithBrowser('batch-mds');
   document.getElementById("browserEnterpriseManifestButton").onclick = () => registerMtcWithBrowser('enterprise-manifest');
   document.getElementById("browserEnterpriseDebugButton").onclick = () => registerMtcWithBrowser('enterprise-mtc-debug');
-  document.getElementById("simBatchMdsButton").onclick = () => simulateMtcCeremony('batch-mds');
-  document.getElementById("simEnterpriseManifestButton").onclick = () => simulateMtcCeremony('enterprise-manifest');
-  document.getElementById("simEnterpriseDebugButton").onclick = () => simulateMtcWithServerNotice('enterprise-mtc-debug');
-  document.getElementById("simEnterpriseKeyRefDebugButton").onclick = () => simulateMtcWithServerNotice('enterprise-keyref-mtc-debug');
 
   document.querySelectorAll('.alg-btn').forEach(btn => {
     btn.onclick = () => toggleAlgButton(parseInt(btn.getAttribute('data-alg'), 10));
@@ -727,11 +750,120 @@ function init() {
   document.getElementById("presetAllAlgsBtn").onclick = () => setSelectedAlgIds([-7, -8, -35, -36, -53, -257, -258, -259, -48, -49, -50]);
   syncAlgButtonsFromInput();
 
+  document.getElementById("loadMetadataBtn").onclick = loadMetadataFromEditor;
+  document.getElementById("resetMetadataBtn").onclick = resetMetadataOnServer;
+  document.getElementById("metadataFileInput").onchange = handleMetadataFileSelect;
+  document.getElementById("fillEnterpriseManifestBtn").onclick = () => {
+    document.getElementById("metadataJsonInput").value = JSON.stringify(SAMPLE_ENTERPRISE_MANIFEST, null, 2);
+  };
+  refreshLoadedMetadata();
+
   return false;
 }
 
-function simulateMtcWithServerNotice(mode) {
-  return simulateMtcCeremony(mode);
+const SAMPLE_ENTERPRISE_MANIFEST = {
+  caId: "g5k_AQI",
+  aaguid: "3q2-7wAAAAAAAADer67wAA",
+  hashAlg: "sha-256",
+  maxBatchWindow: 315360000,
+  batchKeys: [
+    {
+      serial: 1970324836974592,
+      alg: -48,
+      coseKey: "owEHAzgvIFkFINzYZIhJKP3OLxMPdmyU1f8bD5Drf3ZdXIGb0RnVNic4T947v8FBsceKALZ5WDYhaztebO08ntMVXBH7V2OlNMWbzXfzuy8poYZuqgZUV9EwJJIg4T2t0cAW3gXScvC2UaJn1In32wPSGh12nTDpu3lT3U7yN47XUTbUdqrA0hc33M3rZq-aDbacOj_X1m7mGcvdp_u6slrrCAby9gKz1sLFOmF2EHFpfbtPkwT8jTNkvxW8puQdoWPYpUkNkVV5RRkNpN9Q75whss4x8i0HXVuddJXj_B-ByKQ742kQCWVz2uNeNhIzpeV7vNXcRfhbHLnRt_9vMPRyZqfr44JsgQNZppT9mAnhG4lgl2QgoLfA29N8O55172LPdanlMggbqreSaL3nnUoqjNMmkOe09XnFRhKi-O7UncLNFNDPwsRvXLlKwEZLfAyZVkCWilMTbDO1cKrrw8DMFAJhoMQde2ujjOLNTmC9NfChq7mLC0bBqSYfiOztlunetIGyB3RBEHV_07ePlzC205eKzb5TS8UkI7x3ZqyT1QA5X7eOduRg6dailUj2qfZBHvTaKKcULJgsk8CjPAzBk3_k2C4mOIWg8rAfd62JPHdJoTazQc88N13ySdsYNRt5IFryu4NWLE8l85X4VfGf-qkeo44tDJF1dGrU7cJhIrd_-Ur_np2fdzDnHcMyNrI-gZOCofNR5zqZdhe7qcrOQmFhkPaj9A_spZmFst0yzeC3zW9H97sS8SrBBTLNDWKUMXgjcBBpiTes3Y5slsbGWag24jSNKH_vSBvPp6Ot-rbaJV5hPLNZWOwkuDXKejtHzx9HNksaGbK7e1Zl-Ig2iGvajAbHOQQSUfAcMNV360xbtIy-Bn6DG4x3xYdeWsurk1FbSuvz4vFdc8jT3EPIODx7bpKdl9ZTdzXGocuPwx5SR9YxpBcNzhvQUnSL0-2Xs9Mt0P50hmkhioNp2KyRYgjNl4KBzws3ezXWwN-96TVv4j4brhKsefh-p5-YrPGI2MtCE0a8VNIqvIBHXeo5Uho2XAuUjDQ1kp8801SmmNmLEXTYCLlKkAw5vVQN7ZS-9mIU_0TawtiWrDk3A6ENFJ9WT3xNNjjhZs_JClJ_rq3VH3hLq2K2R9Uc9zFL9hX-eYmzJFNIX7KCvxWRanF0-lSy9fY_kYJa95PlbYEuvWt1ILBvu9Q4DEU-6yKAac8hHhdI0AgBfsqMWb3RYVtFrGKrqsH-TB7D2MEwULE0U1M7ehp6T3DUAOrsW5oV4sLqDPiyc40IlxYJtQiFoX2BVc_WOM3Basi3pHO5JG9ITD7b1QXZ8KD0hVDf_71AVU_2PPE7vNeN-667SSMCcNusLsnHNWrMOdj6AF0m1q_WRDYHZUlRUqnWhU8mXarGi2GuaCtZspQ7bS1FXtzxtV5F7i-dpFaJX0_DNEfPU9cBu5vwnQAuIyoeXRULe9NswbGA8Ow8PJHjU7DvMhIooKzBnCpSnfVuMRWv3UwlqYNG7Jaw10sYyEwqfAYOaaXjmrh7sL0E_TRoHVQmKkBICHqY_-dc-ViQyuwiyiNsDq2-ovnm_5fQwxX-m81i4GIBhjsTp_12ZVhVyrusmtVmHhLVNDvFYXPuxZbg4jCH3qzFAzEEmRu2h-5rwV4SXuTA6p3m0xt_ydnjsZ-28VKbQ96iuMwMgE_ZcL49zDVA9EjEbtwYrMjlU7dD2dQfH7TwO55jao5FLOyCfzyN0yTvipUrnCUOQFI6rwI",
+      deviceSerial: "123456",
+      notBefore: 1792281600,
+      notAfter: 2107641600,
+      firmwareVersion: 332805
+    }
+  ]
+};
+
+function renderMetadataSummary(meta) {
+  const el = document.getElementById('metadataSummaryBox');
+  if (!el || !meta) return;
+  const anchors = meta.mtcTrustAnchors || [];
+  const certs = meta.x509TrustRoots || [];
+  const lines = anchors.map(a => {
+    const keysDesc = (a.batchKeys || []).map(k =>
+      `serial=${k.serial} (alg=${k.alg}${k.deviceSerial ? `, deviceSerial="${k.deviceSerial}"` : ''}${k.firmwareVersion !== undefined ? `, fw=${k.firmwareVersion}` : ''})`
+    ).join('; ');
+    return `• caId: ${a.caId} (hex: ${a.caIdHex}) | aaguid: ${a.aaguid || 'any'} | subtrees: ${a.subtreesCount} | batchKeys (${a.batchKeysCount}): ${keysDesc || 'none'}`;
+  });
+  lines.push(`• X.509 Dynamic Root Certificates: ${certs.length}`);
+  el.textContent = lines.join('\n');
+}
+
+async function refreshLoadedMetadata() {
+  try {
+    const resp = await fetch('api/v1/metadata?pretty');
+    const data = await resp.json();
+    renderMetadataSummary(data);
+  } catch (e) {
+    console.error('Failed to load metadata summary', e);
+  }
+}
+
+async function loadMetadataFromEditor() {
+  const textarea = document.getElementById('metadataJsonInput');
+  const verifyEl = document.getElementById('verifyCheckpointsCheckbox');
+  const raw = textarea ? textarea.value.trim() : '';
+  if (!raw) {
+    addMessage('Please paste or select a metadata JSON file first.');
+    return;
+  }
+  const verify = verifyEl ? verifyEl.checked : true;
+  clearMessages();
+  setStatus('Loading metadata JSON into server...');
+  try {
+    const resp = await fetch(`api/v1/metadata?pretty&verifyCheckpoints=${verify}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: raw,
+    });
+    const data = await resp.json();
+    showServerResponse(data);
+    if (data && data.success) {
+      renderMetadataSummary(data.metadata);
+      setStatus(`Loaded ${data.loadedMtcAnchors} MTC anchor(s), ${data.loadedSubtrees} subtree(s), ${data.loadedBatchKeys} batch key(s), ${data.loadedX509Certs} X.509 root cert(s).`);
+      addMessage(`Metadata updated: +${data.loadedMtcAnchors} MTC anchor(s), +${data.loadedBatchKeys} batch key(s), +${data.loadedX509Certs} X.509 cert(s).`);
+    } else {
+      setStatus('Failed to load metadata JSON.');
+    }
+  } catch (e) {
+    setStatus('Error loading metadata JSON.');
+    addMessage(String(e));
+  }
+}
+
+async function resetMetadataOnServer() {
+  clearMessages();
+  setStatus('Resetting server metadata to defaults...');
+  try {
+    const resp = await fetch('api/v1/metadata?pretty', { method: 'DELETE' });
+    const data = await resp.json();
+    showServerResponse(data);
+    if (data && data.metadata) {
+      renderMetadataSummary(data.metadata);
+      setStatus('Reset metadata to defaults (/mtc-metadata.json + Yubico JSON).');
+    }
+  } catch (e) {
+    setStatus('Error resetting metadata.');
+  }
+}
+
+function handleMetadataFileSelect(event) {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const textarea = document.getElementById('metadataJsonInput');
+    if (textarea) {
+      textarea.value = e.target.result;
+    }
+    loadMetadataFromEditor();
+  };
+  reader.readAsText(file);
 }
 
 window.onload = init;
@@ -853,30 +985,6 @@ window.onload = init;
       </div>
 
       <div class="row">
-        <label>Server-side mock (no browser prompt):</label>
-        <div>
-          <button type="button" id="simBatchMdsButton">
-            Simulate Batch MTC (Server Mock)
-          </button>
-        </div>
-        <div>
-          <button type="button" id="simEnterpriseManifestButton">
-            Simulate Enterprise MTC (Server Mock)
-          </button>
-        </div>
-        <div>
-          <button type="button" id="simEnterpriseDebugButton">
-            Simulate Enterprise + mtc-debug (Server Mock)
-          </button>
-        </div>
-        <div>
-          <button type="button" id="simEnterpriseKeyRefDebugButton">
-            Simulate Proof-less mtcKeyRef + mtc-debug (Server Mock)
-          </button>
-        </div>
-      </div>
-
-      <div class="row">
         <div></div>
         <div></div>
         <div>
@@ -902,6 +1010,36 @@ window.onload = init;
       </div>
     </form>
 
+    <details open style="margin: 14px 0; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 6px; background: #f8fafc;">
+      <summary style="cursor: pointer; font-weight: 600;">
+        Attestation Metadata &amp; Enterprise Vendor Manifest Loader (<code>POST /api/v1/metadata</code>)
+      </summary>
+      <div style="margin-top: 8px;">
+        <div style="margin-bottom: 6px;">
+          <b>Currently Loaded MTC Trust Anchors &amp; X.509 Roots:</b>
+          <pre id="metadataSummaryBox" style="margin: 4px 0; padding: 8px; background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 4px; font-size: 12px; white-space: pre-wrap;">Loading...</pre>
+        </div>
+        <div style="margin-bottom: 6px;">
+          <label for="metadataFileInput"><b>Upload JSON file:</b></label>
+          <input type="file" id="metadataFileInput" accept=".json,application/json" />
+          <button type="button" id="fillEnterpriseManifestBtn">
+            Template: Enterprise Vendor Manifest (<code>caId: g5k_AQI</code>)
+          </button>
+          <label style="margin-left: 8px;">
+            <input type="checkbox" id="verifyCheckpointsCheckbox" checked />
+            Verify HSS-LMS subtree checkpoint signatures (when <code>attestationRootCertificates</code> present)
+          </label>
+        </div>
+        <div>
+          <textarea id="metadataJsonInput" rows="7" style="width: 100%; font-family: monospace; font-size: 12px;" placeholder="Paste FIDO MDS3 MetadataStatement JSON, MtcTrustAnchor / Enterprise Vendor Key Manifest JSON, or Yubico MetadataObject JSON here..."></textarea>
+        </div>
+        <div style="margin-top: 6px;">
+          <button type="button" id="loadMetadataBtn"><b>Load / Merge Metadata JSON</b></button>
+          <button type="button" id="resetMetadataBtn">Reset to Default Metadata</button>
+        </div>
+      </div>
+    </details>
+
 
     <p id="session">Not logged in.</p>
     <button id="logoutButton" disabled="disabled">Log out</button>
@@ -916,6 +1054,12 @@ window.onload = init;
         <b>Nickname: </b><span id="device-nickname"></span>
       </div>
       <img id="device-icon"/>
+    </div>
+
+    <div id="validation-panel" style="margin: 12px 0;">
+      <div id="validation-result-banner" style="display: none; padding: 10px 14px; margin-bottom: 8px; border-radius: 6px; font-weight: 700; font-size: 14px;"></div>
+      <b>MakeCredential Validation Debug Log (Scrollable):</b>
+      <pre id="validation-debug-window" style="max-height: 260px; overflow-y: auto; margin-top: 4px; padding: 10px 12px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; font-family: monospace; font-size: 12px; line-height: 1.45; white-space: pre-wrap;">Waiting for MakeCredential ceremony...</pre>
     </div>
 
     Server response: <pre id="server-response"></pre>

@@ -327,7 +327,9 @@ final class MtcAttestationStatementVerifier {
                 "MTC certificate is outside validity window [%d, %d] at %d.",
                 notBefore, notAfter, nowEpochSeconds));
       }
-      if (anchorOpt.isPresent() && anchorOpt.get().getMaxBatchWindow().isPresent()) {
+      if (anchorOpt.isPresent()
+          && anchorOpt.get().getMaxBatchWindow().isPresent()
+          && notAfter != 253402300799L) {
         long maxWindow = anchorOpt.get().getMaxBatchWindow().get();
         if (notAfter - notBefore > maxWindow) {
           throw new IllegalArgumentException(

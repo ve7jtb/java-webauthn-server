@@ -2,6 +2,7 @@ package com.yubico.webauthn.attestation.mtc;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.yubico.webauthn.data.ByteArray;
@@ -89,10 +90,12 @@ public class MtcAttestationInfo {
     return Optional.ofNullable(notAfter);
   }
 
+  @JsonIgnore
   public Optional<Long> getFwVersion() {
     return Optional.ofNullable(fwVersion);
   }
 
+  @JsonProperty("firmwareVersion")
   public Optional<Long> getFirmwareVersion() {
     return Optional.ofNullable(fwVersion);
   }

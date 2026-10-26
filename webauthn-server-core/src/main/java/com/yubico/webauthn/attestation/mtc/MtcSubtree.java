@@ -2,7 +2,7 @@ package com.yubico.webauthn.attestation.mtc;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.yubico.webauthn.data.ByteArray;
 import java.util.Optional;
 import lombok.Builder;
@@ -26,15 +26,14 @@ public class MtcSubtree {
   @NonNull private final ByteArray signature;
   private final ByteArray signingCert;
 
-  @JsonCreator
   public MtcSubtree(
-      @JsonProperty("logNumber") Integer logNumber,
-      @JsonProperty("start") long start,
-      @JsonProperty("end") long end,
-      @NonNull @JsonProperty("rootHash") ByteArray rootHash,
-      @JsonProperty("alg") long alg,
-      @NonNull @JsonProperty("signature") ByteArray signature,
-      @JsonProperty("signingCert") ByteArray signingCert) {
+      Integer logNumber,
+      long start,
+      long end,
+      @NonNull ByteArray rootHash,
+      long alg,
+      @NonNull ByteArray signature,
+      ByteArray signingCert) {
     this.logNumber = logNumber;
     this.start = start;
     this.end = end;
@@ -42,6 +41,30 @@ public class MtcSubtree {
     this.alg = alg;
     this.signature = signature;
     this.signingCert = signingCert;
+  }
+
+  @JsonCreator
+  public static MtcSubtree fromJson(JsonNode node) {
+    if (node == null || !node.isObject()) {
+      throw new IllegalArgumentException("Expected JSON object for MtcSubtree");
+    }
+    Integer logNumber = node.hasNonNull("logNumber") ? node.get("logNumber").asInt() : null;
+    long start = node.path("start").asLong(0L);
+    long end = node.path("end").asLong(0L);
+    ByteArray rootHash = MtcTrustAnchor.parseFlexibleBytes(node.get("rootHash"), "rootHash");
+    long alg =
+        node.hasNonNull("alg")
+            ? node.get("alg").asLong()
+            : (node.hasNonNull("algorithm") ? node.get("algorithm").asLong() : 0L);
+    ByteArray signature =
+        node.hasNonNull("signature")
+            ? MtcTrustAnchor.parseFlexibleBytes(node.get("signature"), "signature")
+            : new ByteArray(new byte[0]);
+    ByteArray signingCert =
+        node.hasNonNull("signingCert")
+            ? MtcTrustAnchor.parseFlexibleBytes(node.get("signingCert"), "signingCert")
+            : null;
+    return new MtcSubtree(logNumber, start, end, rootHash, alg, signature, signingCert);
   }
 
   public Optional<Integer> getLogNumber() {

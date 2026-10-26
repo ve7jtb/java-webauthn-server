@@ -1,4 +1,6 @@
 #!/bin/sh
+: "${JAVA_HOME:=/Users/jbradley/.gemini/antigravity/scratch/jdk21/Contents/Home}"
+export JAVA_HOME
 
 #
 # Copyright © 2015 the original authors.

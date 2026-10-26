@@ -2,7 +2,7 @@ package com.yubico.webauthn.attestation.mtc;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.yubico.webauthn.data.ByteArray;
 import java.util.Optional;
 import lombok.Builder;
@@ -32,15 +32,14 @@ public class MtcBatchKeyEntry {
     this(serial, alg, coseKey, deviceSerial, null, null, null);
   }
 
-  @JsonCreator
   public MtcBatchKeyEntry(
-      @JsonProperty("serial") long serial,
-      @JsonProperty("alg") Long alg,
-      @NonNull @JsonProperty("coseKey") ByteArray coseKey,
-      @JsonProperty("deviceSerial") String deviceSerial,
-      @JsonProperty("notBefore") Long notBefore,
-      @JsonProperty("notAfter") Long notAfter,
-      @JsonProperty("firmwareVersion") Long firmwareVersion) {
+      long serial,
+      Long alg,
+      @NonNull ByteArray coseKey,
+      String deviceSerial,
+      Long notBefore,
+      Long notAfter,
+      Long firmwareVersion) {
     this.serial = serial;
     this.alg = alg;
     this.coseKey = coseKey;
@@ -48,6 +47,50 @@ public class MtcBatchKeyEntry {
     this.notBefore = notBefore;
     this.notAfter = notAfter;
     this.firmwareVersion = firmwareVersion;
+  }
+
+  @JsonCreator
+  public static MtcBatchKeyEntry fromJson(JsonNode node) {
+    return fromJsonNode(node, null);
+  }
+
+  static MtcBatchKeyEntry fromJsonNode(JsonNode node, Long fallbackSerial) {
+    if (node == null || !node.isObject()) {
+      throw new IllegalArgumentException("Expected JSON object for MtcBatchKeyEntry");
+    }
+    long serial;
+    if (node.hasNonNull("serial")) {
+      JsonNode sNode = node.get("serial");
+      serial = sNode.isNumber() ? sNode.asLong() : Long.decode(sNode.asText().trim());
+    } else if (fallbackSerial != null) {
+      serial = fallbackSerial;
+    } else {
+      throw new IllegalArgumentException("Missing serial in MtcBatchKeyEntry");
+    }
+
+    Long alg = null;
+    if (node.hasNonNull("alg")) {
+      alg = node.get("alg").asLong();
+    } else if (node.hasNonNull("algorithm")) {
+      alg = node.get("algorithm").asLong();
+    }
+
+    JsonNode keyNode = node.hasNonNull("coseKey") ? node.get("coseKey") : node.get("publicKey");
+    ByteArray coseKey = MtcTrustAnchor.parseFlexibleBytes(keyNode, "coseKey");
+
+    String deviceSerial =
+        node.hasNonNull("deviceSerial") ? node.get("deviceSerial").asText() : null;
+    Long notBefore = node.hasNonNull("notBefore") ? node.get("notBefore").asLong() : null;
+    Long notAfter = node.hasNonNull("notAfter") ? node.get("notAfter").asLong() : null;
+    Long firmwareVersion = null;
+    if (node.hasNonNull("firmwareVersion")) {
+      firmwareVersion = node.get("firmwareVersion").asLong();
+    } else if (node.hasNonNull("fwVersion")) {
+      firmwareVersion = node.get("fwVersion").asLong();
+    }
+
+    return new MtcBatchKeyEntry(
+        serial, alg, coseKey, deviceSerial, notBefore, notAfter, firmwareVersion);
   }
 
   public Optional<Long> getAlg() {

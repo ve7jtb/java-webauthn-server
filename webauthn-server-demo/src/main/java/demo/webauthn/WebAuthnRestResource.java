@@ -68,6 +68,7 @@ import javax.ws.rs.GET;
 import javax.ws.rs.POST;
 import javax.ws.rs.Path;
 import javax.ws.rs.Produces;
+import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
@@ -429,6 +430,37 @@ public class WebAuthnRestResource {
     }
   }
 
+  @GET
+  @Path("metadata")
+  public Response getMetadata() throws JsonProcessingException {
+    return Response.ok(writeJson(server.getMetadataSummary())).build();
+  }
+
+  @POST
+  @Path("metadata")
+  @Consumes(MediaType.APPLICATION_JSON)
+  public Response loadMetadata(
+      @NonNull String jsonText,
+      @QueryParam("verifyCheckpoints") @DefaultValue("true") boolean verifyCheckpoints)
+      throws JsonProcessingException {
+    Either<List<String>, ObjectNode> result = server.loadMetadataJson(jsonText, verifyCheckpoints);
+    if (result.isRight()) {
+      return Response.ok(writeJson(result.right().get())).build();
+    } else {
+      return messagesJson(Response.status(Status.BAD_REQUEST), result.left().get());
+    }
+  }
+
+  @DELETE
+  @Path("metadata")
+  public Response resetMetadata() throws JsonProcessingException {
+    server.resetMetadataToDefaults();
+    ObjectNode res = jsonFactory.objectNode();
+    res.put("success", true);
+    res.set("metadata", server.getMetadataSummary());
+    return Response.ok(writeJson(res)).build();
+  }
+
   private Response startResponse(String operationName, Object request) {
     try {
       String json = writeJson(request);
@@ -471,20 +503,19 @@ public class WebAuthnRestResource {
   private Response messagesJson(ResponseBuilder response, List<String> messages) {
     logger.debug("Encoding messages as JSON: {}", messages);
     try {
-      return response
-          .entity(
-              writeJson(
-                  jsonFactory
-                      .objectNode()
-                      .set(
-                          "messages",
-                          jsonFactory
-                              .arrayNode()
-                              .addAll(
-                                  messages.stream()
-                                      .map(jsonFactory::textNode)
-                                      .collect(Collectors.toList())))))
-          .build();
+      ObjectNode obj = jsonFactory.objectNode();
+      obj.put("success", false);
+      obj.set(
+          "messages",
+          jsonFactory
+              .arrayNode()
+              .addAll(messages.stream().map(jsonFactory::textNode).collect(Collectors.toList())));
+      obj.set(
+          "debugLog",
+          jsonFactory
+              .arrayNode()
+              .addAll(messages.stream().map(jsonFactory::textNode).collect(Collectors.toList())));
+      return response.entity(writeJson(obj)).build();
     } catch (JsonProcessingException e) {
       logger.error("Failed to encode messages as JSON: {}", messages, e);
       return jsonFail();

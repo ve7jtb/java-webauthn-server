@@ -1,5 +1,7 @@
 package com.yubico.webauthn.attestation.mtc;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.upokecenter.cbor.CBORObject;
 import com.upokecenter.cbor.CBORType;
@@ -33,10 +35,12 @@ public class MtcCertDescriptor {
     return Optional.ofNullable(notAfter);
   }
 
+  @JsonIgnore
   public Optional<Long> getFwVersion() {
     return Optional.ofNullable(fwVersion);
   }
 
+  @JsonProperty("firmwareVersion")
   public Optional<Long> getFirmwareVersion() {
     return Optional.ofNullable(fwVersion);
   }

@@ -1415,7 +1415,8 @@ public class Extensions {
       }
     }
 
-    static Optional<MtcDebugRegistrationOutput> parseAuthenticatorExtensionOutput(CBORObject cbor) {
+    public static Optional<MtcDebugRegistrationOutput> parseAuthenticatorExtensionOutput(
+        CBORObject cbor) {
       CBORObject ext = null;
       if (cbor.ContainsKey(AUTHENTICATOR_EXTENSION_ID)) {
         ext = cbor.get(AUTHENTICATOR_EXTENSION_ID);
