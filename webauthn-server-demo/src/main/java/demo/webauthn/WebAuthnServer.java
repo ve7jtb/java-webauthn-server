@@ -534,6 +534,13 @@ public class WebAuthnServer {
         } catch (Exception ignored) {
           // Optional local enterprise manifest auto-load
         }
+        try (InputStream virtMdsIs =
+            new FileInputStream(
+                "/Users/jbradley/.gemini/antigravity/scratch/mds/pqc_virtual_authenticator_mds.json")) {
+          loadMetadataJsonNode(jsonMapper.readTree(virtMdsIs), false);
+        } catch (Exception ignored) {
+          // Optional local Chromium Virtual Authenticator MDS auto-load
+        }
       } catch (Exception e) {
         logger.warn("Failed to initialize demo MTC anchors", e);
       }
